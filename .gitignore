@@ -1,0 +1,15 @@
+.Renviron
+.Rdata
+.Rhistory
+*.pdf
+*.png
+*.csv
+*.xlsx
+*.rds
+*.gz
+*.tsv
+*.log
+*.txt
+trash
+job_*
+*/*/

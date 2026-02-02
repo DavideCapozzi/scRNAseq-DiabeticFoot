@@ -3,7 +3,9 @@ library(ggplot2)
 library(stringr)
 
 # Directory dove sono i .rds
-rds_dir <- "/home/fdann/Desktop/proj/sc-res/2_new_analysis/4_normalization_and_clustering/res_clustering"
+#rds_dir <- "/home/fdann/Desktop/proj/sc-res/2_new_analysis/4_normalization_and_clustering/res_clustering"
+rds_dir <- "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/4_normalization_and_clustering/seurat_res_0.7/seurat_res_0.7.rds"
+
 
 # Directory di output
 output_dir <- file.path(rds_dir, "umap_all_resolutions")

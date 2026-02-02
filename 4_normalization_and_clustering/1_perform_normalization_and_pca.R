@@ -12,11 +12,11 @@ set.seed(123)
 # ========================================
 # CONFIGURAZIONE DIRECTORY
 # ========================================
-#input_dir <- "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/3_filtering/"
-#output_dir <- "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/3_filtering/"
+input_dir <- "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/3_filtering/"
+output_dir <- "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/3_filtering/"
 
-input_dir <- "/home/fdann/Desktop/proj/sc-res/2_new_analysis/3_filtering/"
-output_dir <- "/home/fdann/Desktop/proj/sc-res/2_new_analysis/4_normalization_and_clustering/res_pca/"
+# input_dir <- "/home/fdann/Desktop/proj/sc-res/2_new_analysis/3_filtering/"
+# output_dir <- "/home/fdann/Desktop/proj/sc-res/2_new_analysis/4_normalization_and_clustering/res_pca/"
 
 # Crea directory output se non esiste
 if (!dir.exists(output_dir)) {
@@ -112,6 +112,24 @@ seurat_obj <- RunPCA(
   verbose = TRUE
 )
 cat("✓ PCA completata con 50 componenti principali\n")
+
+# Numero di PC da utilizzare per downstream analysis
+n_pcs <- 6
+
+# Calcola e stampa la varianza spiegata
+pca_variance <- seurat_obj@reductions$pca@stdev^2
+total_variance <- sum(pca_variance)
+variance_explained <- sum(pca_variance[1:n_pcs]) / total_variance * 100
+
+cat("\n📊 VARIANZA SPIEGATA:\n")
+cat(sprintf("  - Prime %d PC: %.2f%%\n", n_pcs, variance_explained))
+cat(sprintf("  - Varianza cumulativa per PC:\n"))
+for (i in 1:n_pcs) {
+  cum_var <- sum(pca_variance[1:i]) / total_variance * 100
+  cat(sprintf("    PC 1-%d: %.2f%%\n", i, cum_var))
+}
+
+# ========================
 
 # Visualizzazione PCA
 cat("Generando visualizzazioni PCA...\n")

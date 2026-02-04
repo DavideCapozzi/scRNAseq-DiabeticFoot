@@ -10,7 +10,10 @@ library(scales)
 # DEFINIZIONE PATH
 # ==============================================================================
 input_rds_path <- "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/4_normalization_and_clustering/seurat_res_0.7/seurat_res_0.7.rds"
-output_dir <- "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/4_normalization_and_clustering/barplots/" 
+output_dir <- "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/4_normalization_and_clustering/barplots/"
+
+# input_rds_path <- "~/federica.dannunzio@uniroma1.it - Google Drive/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/4_normalization_and_clustering/seurat_res_0.7/seurat_res_0.7.rds"
+# output_dir <- "~/federica.dannunzio@uniroma1.it - Google Drive/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/4_normalization_and_clustering/barplots/" 
 
 # ==============================================================================
 # DEFINIZIONE ANNOTAZIONE CELLULE
@@ -75,7 +78,7 @@ cluster_totals <- df_plot %>%
 # Creiamo le etichette complesse: "Nome Cellula \n(n=...)"
 # Usiamo formatted_labels[as.character(x)] per mappare l'ID al nome
 complex_x_labels <- setNames(
-  paste0(formatted_labels[as.character(cluster_totals$Cluster)], "\n(n=", comma(cluster_totals$Total), ")"), 
+  paste0(formatted_labels[as.character(cluster_totals$Cluster)]), 
   cluster_totals$Cluster
 )
 
@@ -98,7 +101,7 @@ common_theme <- theme_bw() +
 # --- VARIANTE 1: STACKED ---
 p1 <- ggplot(df_plot, aes(x = Cluster, y = Count, fill = Condition)) +
   geom_bar(stat = "identity", position = "stack", width = 0.7) +
-  scale_fill_manual(values = c("not_healed" = "#E69F00", "healed" = "#56B4E9")) + 
+  scale_fill_manual(values = c("not_healed" = "#fdae61", "healed" = "#7fbc41")) + 
   scale_y_continuous(labels = label_number(scale_cut = cut_short_scale())) +
   scale_x_discrete(labels = complex_x_labels) + # Etichette con conteggi
   labs(
@@ -128,7 +131,7 @@ p2 <- ggplot(df_plot, aes(x = Cluster, y = Count, fill = Cluster)) +
 # --- VARIANTE 3: SIDE-BY-SIDE ---
 p3 <- ggplot(df_plot, aes(x = Cluster, y = Count, fill = Condition)) +
   geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
-  scale_fill_manual(values = c("not_healed" = "#E69F00", "healed" = "#56B4E9")) + 
+  scale_fill_manual(values = c("not_healed" = "#fdae61", "healed" = "#7fbc41")) + 
   scale_y_continuous(labels = label_number(scale_cut = cut_short_scale())) +
   scale_x_discrete(labels = formatted_labels) + # Etichette semplici formattate
   labs(

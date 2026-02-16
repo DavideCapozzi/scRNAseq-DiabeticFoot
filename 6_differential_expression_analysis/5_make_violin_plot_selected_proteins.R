@@ -34,7 +34,7 @@ df <- read_excel(de_file)
 
 # 3. Load Seurat object
 cat("Loading Seurat object...\n")
-#seurat_obj <- readRDS(seurat_file)
+seurat_obj <- readRDS(seurat_file)
 
 # 4. Cluster mapping (number -> annotation)
 new_names <- c(
@@ -226,6 +226,259 @@ for(gene in geni_target) {
   } # End cluster loop
   
 } # End gene loop
+
+
+# ==============================================================================
+# NEW SECTION: GLOBAL COMPARISONS & HEATMAP (ROBUST VERSION)
+# ==============================================================================
+
+cat("\n========================================\n")
+cat("STARTING GLOBAL VISUALIZATION ANALYSIS\n")
+cat("========================================\n")
+
+# Create specific output directory
+output_dir_global <- "global_comparisons"
+if(!dir.exists(output_dir_global)) dir.create(output_dir_global)
+
+# --- 1. PREPARAZIONE DATI COMUNI ---
+all_cell_types <- levels(seurat_obj)
+n_types <- length(all_cell_types)
+
+# Calcolo larghezza dinamica
+# Base 5 pollici + 0.8 pollici per ogni tipo cellulare per spaziatura extra
+dyn_width <- 5 + (n_types * 0.8)
+
+# --- 2. GENERAZIONE VIOLIN PLOT ---
+
+for(gene in geni_target) {
+  
+  cat("Processing global view for:", gene, "\n")
+  
+  if (!gene %in% rownames(seurat_obj)) {
+    cat("  WARNING: Gene", gene, "not found. Skipping.\n")
+    next
+  }
+  
+  # Fetch Data
+  global_data <- FetchData(seurat_obj, vars = c(gene, "ident", "condition"))
+  colnames(global_data) <- c("expression", "cell_type", "condition")
+  global_data$cell_type <- factor(global_data$cell_type, levels = levels(seurat_obj))
+  
+  plot_title <- paste(gene, "\u2212 Expression levels across cell types")
+  
+  # ----------------------------------------------------------------------------
+  # OPTION 1: COMPARABLE SCALES (Shared Y Axis)
+  # ----------------------------------------------------------------------------
+  pdf_name_comp <- file.path(output_dir_global, paste0(gene, "_AllCells_Comparable_Scale.pdf"))
+  
+  tryCatch({
+    # Height 8 per dare spazio sotto
+    pdf(pdf_name_comp, width = dyn_width, height = 8) 
+    
+    p1 <- ggplot(global_data, aes(x = cell_type, y = expression, fill = condition)) +
+      geom_violin(
+        scale = "width",       
+        position = position_dodge(width = 0.8),
+        trim = TRUE,
+        linewidth = 0.2
+      ) +
+      scale_fill_manual(values = my_colors) +
+      ggtitle(plot_title) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(size = 20, face = "bold", hjust = 0.5, margin = margin(b = 20)),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 12, face = "bold", color = "black"),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        axis.title.x = element_blank(),
+        legend.position = "top",
+        legend.text = element_text(size = 12),
+        panel.grid = element_blank(),
+        axis.line = element_line(colour = "black"),
+        panel.border = element_blank(),
+        
+        # CRITICAL FIX 1: Increased Left Margin (3cm) and Bottom (3.5cm)
+        plot.margin = margin(t = 1, r = 1, b = 3.5, l = 3, "cm")
+      ) +
+      ylab("Expression Level") +
+      coord_cartesian(clip = "off")
+    
+    print(p1)
+    dev.off()
+    cat("  -> Generated Comparable Scale plot.\n")
+    
+  }, error = function(e) {
+    cat("  ERROR in Comparable plot:", conditionMessage(e), "\n")
+    if(dev.cur() != 1) dev.off()
+  })
+  
+  # ----------------------------------------------------------------------------
+  # OPTION 2: MAXIMIZED VISIBILITY (Free Y Scales)
+  # ----------------------------------------------------------------------------
+  pdf_name_opt <- file.path(output_dir_global, paste0(gene, "_AllCells_Maximized_Shape.pdf"))
+  
+  tryCatch({
+    # Height increased to 9 to allow facets to be taller relative to text
+    pdf(pdf_name_opt, width = dyn_width, height = 9)
+    
+    p2 <- ggplot(global_data, aes(x = condition, y = expression, fill = condition)) +
+      geom_violin(
+        scale = "width", 
+        trim = TRUE, 
+        linewidth = 0.2,
+        adjust = 1.1
+      ) +
+      facet_wrap(~cell_type, nrow = 1, scales = "free_y", strip.position = "bottom") + 
+      scale_fill_manual(values = my_colors) +
+      ggtitle(plot_title) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(size = 20, face = "bold", hjust = 0.5, margin = margin(b = 20)),
+        
+        # Strip text (Labels)
+        strip.text = element_text(angle = 45, hjust = 1, size = 11, face = "bold", color = "black"),
+        strip.background = element_blank(),
+        strip.placement = "outside", # Moves labels outside axis area
+        
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.line.y = element_blank(), 
+        axis.title.x = element_blank(),
+        
+        legend.position = "top",
+        legend.text = element_text(size = 12),
+        panel.grid = element_blank(),
+        panel.spacing = unit(0.2, "lines"), 
+        panel.border = element_blank(),
+        axis.line.x = element_line(color="black"),
+        
+        # CRITICAL FIX 2: Massive Bottom Margin (6cm) to fit long rotated labels
+        plot.margin = margin(t = 1, r = 1, b = 6, l = 2, "cm")
+      ) +
+      coord_cartesian(clip = "off")
+    
+    print(p2)
+    dev.off()
+    cat("  -> Generated Maximized Shape plot.\n")
+    
+  }, error = function(e) {
+    cat("  ERROR in Maximized plot:", conditionMessage(e), "\n")
+    if(dev.cur() != 1) dev.off()
+  })
+}
+
+# --- 3. GENERAZIONE HEATMAP TARGET GENES (MANUAL ROBUST METHOD) ---
+cat("\nProcessing Target Gene Heatmap...\n")
+
+tryCatch({
+  
+  # 3a. Manual Aggregation using dplyr
+  # This bypasses Seurat's renaming logic entirely.
+  
+  # Fetch data for genes + metadata
+  hm_data <- FetchData(seurat_obj, vars = c(geni_target, "ident", "condition"), slot = "data")
+  
+  # Rename columns to avoid issues
+  # Note: FetchData usually converts dashes to dots in gene names, but here we assume standard names
+  # Check if gene names in hm_data match geni_target. If not, map them.
+  # Usually Seurat keeps gene names intact in FetchData unless they are non-syntactic.
+  
+  # Prepare grouping column
+  hm_data$Group <- paste(hm_data$ident, hm_data$condition, sep = "_CUTHERE_")
+  
+  # Helper function for Seurat-style averaging (Log(Mean(Expm1(x)) + 1))
+  # Only if working on LogNormalized data (default 'data' slot)
+  seurat_mean <- function(x) {
+    log1p(mean(expm1(x)))
+  }
+  
+  # Summarize
+  library(dplyr)
+  avg_df <- hm_data %>%
+    group_by(Group) %>%
+    summarise(across(all_of(geni_target), seurat_mean))
+  
+  # 3b. Scale Data (Z-score by Gene)
+  # Convert to matrix for scaling
+  mat_raw <- as.matrix(avg_df[, -1])
+  rownames(mat_raw) <- avg_df$Group
+  
+  # Scale: We want Z-score PER GENE (Columns in avg_df are genes right now)
+  # scale() works on columns, so this is correct for per-gene scaling
+  mat_scaled <- scale(mat_raw)
+  
+  # 3c. Prepare Long Format for ggplot
+  # We convert the scaled matrix back to a data frame for plotting
+  heatmap_df <- as.data.frame(mat_scaled)
+  heatmap_df$Group <- rownames(heatmap_df)
+  
+  # Pivot Longer manually
+  library(tidyr)
+  heatmap_long <- pivot_longer(heatmap_df, cols = -Group, names_to = "Gene", values_to = "Expression")
+  
+  # 3d. Parse Groups back to CellType and Condition
+  # We used "_CUTHERE_" as separator to be safe
+  split_groups <- strsplit(heatmap_long$Group, "_CUTHERE_")
+  heatmap_long$CellType <- sapply(split_groups, `[`, 1)
+  heatmap_long$Condition <- sapply(split_groups, `[`, 2)
+  
+  # 3e. Set Factor Levels for Ordering
+  # Gene order
+  heatmap_long$Gene <- factor(heatmap_long$Gene, levels = rev(geni_target))
+  
+  # Cell Type order (Same as Seurat object)
+  heatmap_long$CellType <- factor(heatmap_long$CellType, levels = levels(seurat_obj))
+  
+  # Condition order
+  cond_levels <- sort(unique(seurat_obj$condition))
+  heatmap_long$Condition <- factor(heatmap_long$Condition, levels = cond_levels)
+  
+  # 3f. Plotting
+  heatmap_filename <- file.path(output_dir_global, "Target_Genes_Heatmap.pdf")
+  
+  # Calculate width based on number of columns (CellType * Condition)
+  n_cols_hm <- length(unique(heatmap_long$Group))
+  hm_width <- 5 + (n_cols_hm * 0.4)
+  
+  pdf(heatmap_filename, width = hm_width, height = 5)
+  
+  p_hm <- ggplot(heatmap_long, aes(x = interaction(Condition, CellType, sep=" "), y = Gene, fill = Expression)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient2(low = "#2166ac", mid = "white", high = "#b2182b", midpoint = 0, name = "Z-Score") +
+    scale_y_discrete(expand = c(0,0)) +
+    # Use nested x-axis logic: Just show CellType on axis, maybe color strip for condition?
+    # Keeping it simple: Label is "CellType Condition"
+    scale_x_discrete(expand = c(0,0)) +
+    ggtitle("Differential Expression of Target Genes") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      # Rotate x labels 90 degrees
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 10),
+      axis.text.y = element_text(size = 12, face = "bold.italic"),
+      axis.title = element_blank(),
+      legend.position = "right",
+      panel.grid = element_blank(),
+      plot.margin = margin(t=10, r=10, b=10, l=10)
+    )
+  
+  print(p_hm)
+  dev.off()
+  
+  cat("  -> Generated Target Genes Heatmap (Robust).\n")
+  
+}, error = function(e) {
+  cat("  ERROR in Heatmap generation:", conditionMessage(e), "\n")
+  if(dev.cur() != 1) dev.off()
+})
+
+cat("\n========================================\n")
+cat("Analysis and Visualization Completed.\n")
+cat("Outputs saved in:", output_dir_global, "\n")
+cat("========================================\n")
 
 cat("\n========================================\n")
 cat("Analysis completed successfully\n")

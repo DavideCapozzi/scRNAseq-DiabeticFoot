@@ -24,7 +24,7 @@ CONFIG <- list(
   seurat_file = "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/5_annotation/manual_annotation_res/seurat_res_0.7_with_celltypeID.rds",
   
   # Analysis Parameters
-  genes_target       = c("CCL4", "CCR1", "CCR5"),
+  genes_target       = c("CCL4", "CCR5"),
   min_cells_smooth   = 100,
   
   # Violin Plot Settings
@@ -392,7 +392,7 @@ for(gene in CONFIG$genes_target) {
 }
 
 # ==============================================================================
-# 5. HEATMAP (Final Corrected Version - 90 Degree Rotation)
+# 5. HEATMAP (Final Corrected Version - 90 Degree Rotation & Dynamic Folders)
 # ==============================================================================
 cat("\nProcessing Target Gene Heatmap...\n")
 
@@ -400,6 +400,23 @@ cat("\nProcessing Target Gene Heatmap...\n")
 while(!is.null(dev.list())) dev.off()
 
 tryCatch({
+  
+  # --- 0. Setup Dynamic Output Directory ---
+  # Truncate to first 5 genes for folder name to avoid OS path length limits
+  genes_for_folder <- if(length(CONFIG$genes_target) > 5) {
+    c(CONFIG$genes_target[1:5], "etc")
+  } else {
+    CONFIG$genes_target
+  }
+  
+  folder_suffix <- paste(genes_for_folder, collapse = "_")
+  heatmap_out_dir <- file.path(output_dir_global, paste0("heatmap_", folder_suffix))
+  
+  if(!dir.exists(heatmap_out_dir)) {
+    dir.create(heatmap_out_dir, recursive = TRUE)
+  }
+  
+  cat("  -> Saving heatmaps to:", heatmap_out_dir, "\n")
   
   # --- 1. Fetch Data ---
   hm_data <- FetchData(seurat_obj, vars = c(CONFIG$genes_target, "ident", "condition"), slot = "data")
@@ -450,26 +467,22 @@ tryCatch({
   
   generate_heatmap <- function(data, filename_suffix, fill_scale, plot_title) {
     
-    # 1. Width Calculation (Increased multiplier for better spacing)
+    # 1. Width Calculation
     n_celltypes <- length(unique(data$CellType))
-    # Using 1.2 inches per cluster to ensure font fits horizontally
-    calc_width <- CONFIG$dims$base_width_heatmap + (n_celltypes * 0.6)
+    calc_width <- as.numeric(CONFIG$dims$base_width_heatmap)[1] + (n_celltypes * 0.6)
     
-    # 2. Height Calculation (Explicit Scalar)
-    m_top_inch <- as.numeric(CONFIG$heatmap$margins$top) / 2.54
-    m_btm_inch <- as.numeric(CONFIG$heatmap$margins$bottom) / 2.54
-    h_body     <- as.numeric(CONFIG$dims$height_heatmap_body)
+    # 2. Height Calculation (Explicit Scalar Fix)
+    m_top_inch <- as.numeric(CONFIG$heatmap$margins$top)[1] / 2.54
+    m_btm_inch <- as.numeric(CONFIG$heatmap$margins$bottom)[1] / 2.54
+    h_body     <- as.numeric(CONFIG$dims$height_heatmap_body)[1]
     
     # Total PDF Height
     calc_height <- h_body + m_top_inch + m_btm_inch
     
-    # Force scalar dimensions
-    if(length(calc_width) > 1) calc_width <- calc_width[1]
-    if(length(calc_height) > 1) calc_height <- calc_height[1]
-    
     cat(sprintf("  Debug: Plotting %s [W: %.2f, H: %.2f]\n", filename_suffix, calc_width, calc_height))
     
-    full_filename <- file.path(output_dir_global, paste0("Target_Genes_Heatmap_", filename_suffix, ".pdf"))
+    # Write to the dynamically generated gene-specific directory
+    full_filename <- file.path(heatmap_out_dir, paste0("Target_Genes_Heatmap_", filename_suffix, ".pdf"))
     
     pdf(full_filename, width = calc_width, height = calc_height)
     
@@ -489,28 +502,28 @@ tryCatch({
       ggtitle(plot_title) +
       theme_minimal() +
       theme(
-        plot.title = element_text(size = CONFIG$fonts$title, face = "bold", hjust = 0.5, margin = margin(b=20)),
+        plot.title = element_text(size = as.numeric(CONFIG$fonts$title)[1], face = "bold", hjust = 0.5, margin = margin(b=20)),
         
         # Condition Labels (Top)
         axis.text.x.top = element_text(
           angle = 45, hjust = 0, vjust = 0, 
-          size = CONFIG$heatmap$fonts$condition_label, color = "black"
+          size = as.numeric(CONFIG$heatmap$fonts$condition_label)[1], color = "black"
         ),
         axis.title.x = element_blank(),
         
         # Gene Labels (Y Axis)
         axis.text.y = element_text(
-          size = CONFIG$heatmap$fonts$gene_label, 
+          size = as.numeric(CONFIG$heatmap$fonts$gene_label)[1], 
           face = "bold.italic", color = "black"
         ),
         axis.title.y = element_blank(),
         
         # Cluster Labels (Bottom Strip) - ROTATION FIXED TO 90
         strip.text.x.bottom = element_text(
-          angle = 90,        # Vertical rotation avoids side clipping
-          hjust = 1,         # Anchors text end to the axis (hangs down)
-          vjust = 0.5,       # Centers text in the column width
-          size = CONFIG$heatmap$fonts$cluster_label, 
+          angle = 90,        
+          hjust = 1,         
+          vjust = 0.5,       
+          size = as.numeric(CONFIG$heatmap$fonts$cluster_label)[1], 
           face = "bold", color = "black"
         ),
         strip.background = element_blank(),
@@ -522,10 +535,10 @@ tryCatch({
         
         # Margins
         plot.margin = margin(
-          t = as.numeric(CONFIG$heatmap$margins$top), 
-          r = as.numeric(CONFIG$heatmap$margins$right), 
-          b = as.numeric(CONFIG$heatmap$margins$bottom), 
-          l = as.numeric(CONFIG$heatmap$margins$left), 
+          t = as.numeric(CONFIG$heatmap$margins$top)[1], 
+          r = as.numeric(CONFIG$heatmap$margins$right)[1], 
+          b = as.numeric(CONFIG$heatmap$margins$bottom)[1], 
+          l = as.numeric(CONFIG$heatmap$margins$left)[1], 
           unit = "cm"
         )
       )
@@ -541,24 +554,40 @@ tryCatch({
   col_mid  <- CONFIG$heatmap$colors$mid
   col_high <- CONFIG$heatmap$colors$high
   
+  # Calculate dynamic symmetric limits for divergent scales to balance the legend
+  max_z <- max(abs(df_std$Val), na.rm = TRUE)
+  if(max_z == 0 || !is.finite(max_z)) max_z <- 1 # Fallback for edge cases
+  
+  max_pwr <- max(abs(df_nonlinear$Val), na.rm = TRUE)
+  if(max_pwr == 0 || !is.finite(max_pwr)) max_pwr <- 1
+  
   # 1. Standard Z-Score
   generate_heatmap(
     df_std, "1_Standard_ZScore",
-    scale_fill_gradient2(low = col_low, mid = col_mid, high = col_high, midpoint = 0, name = "Z-Score"),
+    scale_fill_gradient2(
+      low = col_low, mid = col_mid, high = col_high, midpoint = 0, 
+      limits = c(-max_z, max_z), name = "Z-Score"
+    ),
     "Differential Expression (Standard Z-Score)"
   )
   
   # 2. Maximized Relative
   generate_heatmap(
     df_minmax, "2_Maximized_Relative",
-    scale_fill_gradientn(colors = c(col_low, col_mid, col_high), values = c(0, 0.5, 1), name = "Rel. Expr\n(0-1)"),
+    scale_fill_gradientn(
+      colors = c(col_low, col_mid, col_high), values = c(0, 0.5, 1), 
+      limits = c(0, 1), name = "Rel. Expr\n(0-1)"
+    ),
     "Differential Expression (Relative Min-Max)"
   )
   
   # 3. Non-Linear Power Scale
   generate_heatmap(
     df_nonlinear, "3_NonLinear_PowerScale",
-    scale_fill_gradient2(low = col_low, mid = col_mid, high = col_high, midpoint = 0, name = "Power(Z)"),
+    scale_fill_gradient2(
+      low = col_low, mid = col_mid, high = col_high, midpoint = 0, 
+      limits = c(-max_pwr, max_pwr), name = "Power(Z)"
+    ),
     "Differential Expression (Gamma Corrected)"
   )
   
@@ -569,6 +598,6 @@ tryCatch({
 
 cat("\n========================================\n")
 cat("Analysis completed successfully\n")
-cat("Outputs saved in:", output_dir_global, "\n")
+cat("Outputs saved in:", output_dir_global, "and its subdirectories\n")
 cat("Total individual plots generated:", total_plots, "\n")
 cat("========================================\n")

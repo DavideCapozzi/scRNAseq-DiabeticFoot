@@ -96,7 +96,7 @@ df <- read_excel(CONFIG$de_file)
 
 # Load Seurat Object
 cat("Loading Seurat object...\n")
-seurat_obj <- readRDS(CONFIG$seurat_file)
+#seurat_obj <- readRDS(CONFIG$seurat_file)
 
 # Mapping: Cluster IDs to Names
 new_names <- c(
@@ -595,6 +595,67 @@ tryCatch({
   cat("  ERROR in Heatmap generation:", conditionMessage(e), "\n")
   if(dev.cur() != 1) dev.off()
 })
+
+# --- 7. STRATEGY 4: Log2 Fold Change Heatmap ---
+
+cond_levels_all <- levels(avg_long$Condition)
+cond_healed_name <- cond_levels_all[grepl("healed", tolower(cond_levels_all)) & !grepl("not", tolower(cond_levels_all))][1]
+cond_not_healed_name <- cond_levels_all[grepl("not", tolower(cond_levels_all))][1]
+
+df_fc <- avg_long %>%
+  mutate(Linear_Mean = expm1(Expression)) %>%
+  select(-Expression) %>%
+  pivot_wider(names_from = Condition, values_from = Linear_Mean) %>%
+  rename(
+    Healed_Val = !!sym(cond_healed_name),
+    Not_Healed_Val = !!sym(cond_not_healed_name)
+  ) %>%
+  mutate(
+    Healed_Val = replace_na(Healed_Val, 0),
+    Not_Healed_Val = replace_na(Not_Healed_Val, 0),
+    Log2FC = log2((Healed_Val + 1e-4) / (Not_Healed_Val + 1e-4))
+  )
+
+cap_limit <- 3
+df_fc <- df_fc %>%
+  mutate(Log2FC_Capped = case_when(
+    Log2FC > cap_limit ~ cap_limit,
+    Log2FC < -cap_limit ~ -cap_limit,
+    TRUE ~ Log2FC
+  ))
+
+n_celltypes_fc <- length(unique(df_fc$CellType))
+calc_width_fc <- as.numeric(CONFIG$dims$base_width_heatmap)[1] + (n_celltypes_fc * 0.4)
+calc_height_fc <- as.numeric(CONFIG$dims$height_heatmap_body)[1] + 2
+
+full_filename_fc <- file.path(heatmap_out_dir, "Target_Genes_Heatmap_4_Log2FC.pdf")
+
+pdf(full_filename_fc, width = calc_width_fc, height = calc_height_fc)
+
+p_fc <- ggplot(df_fc, aes(x = CellType, y = Gene, fill = Log2FC_Capped)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  scale_fill_gradient2(
+    low = col_low, mid = col_mid, high = col_high, midpoint = 0,
+    limits = c(-cap_limit, cap_limit), 
+    name = "Log2 FC\n(Healed vs Not)",
+    oob = scales::squish
+  ) +
+  ggtitle("Differential Expression (Log2 Fold Change)") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = as.numeric(CONFIG$fonts$title)[1], face = "bold", hjust = 0.5, margin = margin(b=20)),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = as.numeric(CONFIG$heatmap$fonts$cluster_label)[1], face = "bold", color = "black"),
+    axis.text.y = element_text(size = as.numeric(CONFIG$heatmap$fonts$gene_label)[1], face = "bold.italic", color = "black"),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = margin(t = 1, r = 2, b = 6, l = 1, unit = "cm"),
+    legend.position = "right"
+  ) +
+  coord_cartesian(clip = "off")
+
+print(p_fc)
+dev.off()
+cat("  -> Generated: 4_Log2FoldChange_Heatmap\n")
 
 cat("\n========================================\n")
 cat("Analysis completed successfully\n")

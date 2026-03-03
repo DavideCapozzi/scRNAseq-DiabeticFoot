@@ -15,11 +15,16 @@
 #
 #     3.  <TAG>_DotPlot.pdf
 #         Custom dot plot — one panel per gene.
-#         rows = cell types, x = condition (healed | not_healed).
+#         rows = Seurat clusters (RNA_snn_res.0.7), x = condition.
 #         Dot SIZE = % cells expressing the gene (scaled per gene [1,8]).
 #         Dot COLOUR = mean normalised expression.
 #
-#   Significance thresholds (FDR-based, from DE file):
+#     4.  <TAG>_ViolinPlot.pdf
+#         Violin plot — one panel per gene.
+#         y = normalised expression, x = condition (healed | not_healed).
+#         Facets = Seurat clusters (RNA_snn_res.0.7).
+#
+#   Significance thresholds (FDR-based, from DE file — heatmaps only):
 #     ***  FDR < 0.001
 #     **   FDR < 0.01
 #     *    FDR < 0.05
@@ -65,7 +70,7 @@ CONFIG <- list(
   zscore_colors = c(low = "#2166AC", mid = "#F7F7F7", high = "#B2182B"),
   expr_colors   = c(low = "#F0F0F0", high = "#B2182B"),
   
-  # ---- Biological cell-type order (T -> NK -> B -> Myeloid) ----------------
+  # ---- Biological cell-type order used for heatmaps only -------------------
   cell_lineage_order = c(
     "CD4 T cells (naive/CM)",
     "CD4 T cells (CD4 memory/activated Th2 cells)",
@@ -84,12 +89,14 @@ CONFIG <- list(
   ),
   
   # ---- Output dimensions (inches) ------------------------------------------
-  heatmap_h_width  = 18,
-  heatmap_h_height = 4,
-  heatmap_v_width  = 9,
-  heatmap_v_height = 11,
-  dotplot_width    = 14,
-  dotplot_height   = 11
+  heatmap_h_width   = 18,
+  heatmap_h_height  = 4,
+  heatmap_v_width   = 9,
+  heatmap_v_height  = 11,
+  dotplot_width     = 14,
+  dotplot_height    = 14,   # Slightly taller to accommodate more cluster rows
+  violinplot_width  = 16,
+  violinplot_height = 14
 )
 
 
@@ -163,6 +170,8 @@ load_de_table <- function(path) {
 # ------------------------------------------------------------------------------
 # 3A. Horizontal Z-Score Heatmap  (original layout — unchanged)
 #     rows = genes  |  columns = conditions  |  facets = cell types
+#     Uses annotated cell-type labels (Idents) and the biological order defined
+#     in CONFIG$cell_lineage_order.
 # ------------------------------------------------------------------------------
 generate_zscore_heatmap_horizontal <- function(hm_data, genes, cell_order) {
   
@@ -212,6 +221,9 @@ generate_zscore_heatmap_horizontal <- function(hm_data, genes, cell_order) {
 # ------------------------------------------------------------------------------
 # 3B. Vertical Z-Score Heatmap  (one narrow panel per gene, side-by-side)
 #     rows = cell types  |  columns = healed / not_healed
+#
+#     Uses annotated cell-type labels (Idents) and the biological order defined
+#     in CONFIG$cell_lineage_order.
 #
 #     Significance asterisks come from the pre-loaded DE table (FDR-based).
 #     Stars are displayed in the centre of the 'not_healed' tile for each
@@ -317,21 +329,24 @@ generate_zscore_heatmap_vertical <- function(hm_data, genes, cell_order,
 
 
 # ------------------------------------------------------------------------------
-# 3C. Custom DotPlot  (one panel per gene, assembled side-by-side)
+# 3C. Custom DotPlot — CLUSTER-BASED  (one panel per gene, side-by-side)
+#
+#   CHANGED: rows now show Seurat clusters (RNA_snn_res.0.7) instead of
+#            annotated cell-type labels.  Clusters are sorted numerically.
 #
 #   Layout per panel:
-#     rows  = cell types (ordered top-to-bottom per cell_lineage_order)
-#     x     = condition  (healed | not_healed) — plain black labels
+#     rows  = Seurat clusters (numeric order, top to bottom)
+#     x     = condition  (healed | not_healed)
 #
 #   Dot SIZE   = % cells expressing the gene, scaled per gene to [1, 8].
 #                Raw % printed as text inside each dot.
 #   Dot COLOUR = mean normalised expression (expressors only).
 # ------------------------------------------------------------------------------
-generate_dotplot_custom <- function(hm_data, genes, cell_order) {
+generate_dotplot_custom <- function(hm_data_clusters, genes, cluster_order) {
   
-  # Aggregate % expressed and mean expression per (cell type x condition x gene)
-  dot_data <- hm_data %>%
-    group_by(ident, condition, Gene) %>%
+  # Aggregate % expressed and mean expression per (cluster x condition x gene)
+  dot_data <- hm_data_clusters %>%
+    group_by(cluster, condition, Gene) %>%
     summarise(
       Pct_Expr  = mean(Expression > 0, na.rm = TRUE) * 100,
       Mean_Expr = mean(Expression[Expression > 0], na.rm = TRUE),
@@ -339,11 +354,11 @@ generate_dotplot_custom <- function(hm_data, genes, cell_order) {
     ) %>%
     replace_na(list(Mean_Expr = 0)) %>%
     mutate(
-      ident     = factor(ident,     levels = rev(cell_order)),
+      # Use cluster_order for y-axis ordering (reversed so cluster 0 is at top)
+      cluster   = factor(cluster,   levels = rev(cluster_order)),
       condition = factor(condition, levels = c("healed", "not_healed")),
       Gene      = factor(Gene,      levels = genes)
-    ) %>%
-    filter(!is.na(ident))
+    )
   
   # Per-gene min-max scaling of dot size to [1, 8].
   # Scaling within each gene maximises contrast between conditions.
@@ -369,7 +384,7 @@ generate_dotplot_custom <- function(hm_data, genes, cell_order) {
     show_legend <- (i == length(genes))
     
     p <- ggplot(df_gene,
-                aes(x = condition, y = ident,
+                aes(x = condition, y = cluster,
                     size  = Pct_Scaled,
                     color = Mean_Expr)) +
       geom_point(alpha = 0.90) +
@@ -401,7 +416,7 @@ generate_dotplot_custom <- function(hm_data, genes, cell_order) {
       scale_x_discrete(labels = cond_labels,
                        expand = expansion(add = 0.65)) +
       scale_y_discrete(expand = expansion(add = 0.55)) +
-      labs(title = gene_name, x = NULL, y = NULL) +
+      labs(title = gene_name, x = NULL, y = "Cluster") +
       theme_minimal(base_size = 13) +
       theme(
         plot.title         = element_text(face = "bold.italic", size = 14,
@@ -410,6 +425,7 @@ generate_dotplot_custom <- function(hm_data, genes, cell_order) {
                                           color = "black",
                                           margin = margin(t = 4)),
         axis.text.y        = element_text(face = "bold", size = 11),
+        axis.title.y       = element_text(size = 11, face = "bold"),
         panel.grid.major.y = element_line(color = "grey93", linewidth = 0.4),
         panel.grid.major.x = element_blank(),
         panel.grid.minor   = element_blank(),
@@ -419,7 +435,8 @@ generate_dotplot_custom <- function(hm_data, genes, cell_order) {
       )
     
     # Suppress repeated y-axis labels from second panel onward
-    if (i > 1) p <- p + theme(axis.text.y = element_blank())
+    if (i > 1) p <- p + theme(axis.text.y = element_blank(),
+                              axis.title.y = element_blank())
     
     p
   })
@@ -428,7 +445,103 @@ generate_dotplot_custom <- function(hm_data, genes, cell_order) {
   wrap_plots(panels, nrow = 1) +
     plot_annotation(
       title    = paste(genes, collapse = " & "),
-      subtitle = "Dot size: % expressed (scaled per gene)  \u00b7  Colour: mean normalised expression",
+      subtitle = "Dot size: % expressed (scaled per gene)  \u00b7  Colour: mean normalised expression  \u00b7  Rows: Seurat clusters (res 0.7)",
+      theme    = theme(
+        plot.title    = element_text(face = "bold", size = 15, hjust = 0.5),
+        plot.subtitle = element_text(size = 10, hjust = 0.5, color = "grey40",
+                                     margin = margin(b = 8))
+      )
+    )
+}
+
+
+# ------------------------------------------------------------------------------
+# 3D. Violin Plot — CLUSTER-BASED  (one panel per gene, assembled side-by-side)
+#
+#   NEW PLOT: mirrors the logic of the dot plot but shows the full expression
+#             distribution per cluster as a violin.
+#
+#   Layout per panel:
+#     x     = condition  (healed | not_healed) — fill colour differentiates
+#     y     = normalised expression (log-normalised counts)
+#     facet = Seurat cluster (RNA_snn_res.0.7), in numeric order
+#
+#   A jitter layer overlaid on the violin shows individual cell expression.
+#   A boxplot overlay (notch = FALSE) summarises median and IQR.
+#   Zero-expression cells are included to represent the full distribution.
+# ------------------------------------------------------------------------------
+generate_violinplot_clusters <- function(hm_data_clusters, genes, cluster_order) {
+  
+  # Prepare long-format data with cluster and condition
+  vln_data <- hm_data_clusters %>%
+    mutate(
+      cluster   = factor(cluster,   levels = cluster_order),
+      condition = factor(condition, levels = c("healed", "not_healed")),
+      Gene      = factor(Gene,      levels = genes)
+    )
+  
+  # Condition colour palette — consistent with healed/not_healed distinction
+  cond_colors <- c(healed = "#4393C3", not_healed = "#D6604D")
+  cond_labels <- c(healed = "Healed", not_healed = "Not Healed")
+  
+  # Build one panel per gene
+  panels <- lapply(seq_along(genes), function(i) {
+    
+    gene_name   <- genes[i]
+    df_gene     <- vln_data %>% filter(Gene == gene_name)
+    show_legend <- (i == length(genes))
+    
+    p <- ggplot(df_gene,
+                aes(x = condition, y = Expression, fill = condition)) +
+      # Violin layer: shows full expression distribution per cluster x condition
+      geom_violin(
+        trim     = TRUE,   # trim violin tails to data range
+        scale    = "width", # all violins have equal maximum width
+        alpha    = 0.70,
+        linewidth = 0.3,
+        color    = "grey30"
+      )  +
+      # One facet per cluster, arranged in numeric order
+      facet_wrap(~ cluster, ncol = 4, scales = "free_y",
+                 labeller = label_both) +
+      scale_fill_manual(
+        values = cond_colors,
+        labels = cond_labels,
+        name   = "Condition",
+        guide  = if (show_legend) "legend" else "none"
+      ) +
+      scale_x_discrete(labels = cond_labels) +
+      labs(
+        title = gene_name,
+        x     = NULL,
+        y     = "Normalised Expression"
+      ) +
+      theme_minimal(base_size = 12) +
+      theme(
+        plot.title       = element_text(face = "bold.italic", size = 14,
+                                        hjust = 0.5, margin = margin(b = 6)),
+        axis.text.x      = element_text(angle = 30, hjust = 1, vjust = 1,
+                                        size = 9, color = "black"),
+        axis.text.y      = element_text(size = 9),
+        axis.title.y     = element_text(size = 11, face = "bold",
+                                        margin = margin(r = 6)),
+        strip.text       = element_text(face = "bold", size = 10),
+        strip.background = element_rect(fill = "grey95", color = NA),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor   = element_blank(),
+        legend.position  = if (show_legend) "bottom" else "none",
+        legend.title     = element_text(size = 10, face = "bold"),
+        legend.text      = element_text(size = 9)
+      )
+    
+    p
+  })
+  
+  # Stack gene panels vertically (one row per gene) and add shared title
+  wrap_plots(panels, ncol = 1) +
+    plot_annotation(
+      title    = paste(genes, collapse = " & "),
+      subtitle = "Normalised expression per Seurat cluster (res 0.7)  \u00b7  healed vs not_healed",
       theme    = theme(
         plot.title    = element_text(face = "bold", size = 15, hjust = 0.5),
         plot.subtitle = element_text(size = 10, hjust = 0.5, color = "grey40",
@@ -440,10 +553,15 @@ generate_dotplot_custom <- function(hm_data, genes, cell_order) {
 
 # ==============================================================================
 # 4. PER-PAIR PIPELINE
-#    Orchestrates data fetching and all three plot calls for one gene pair.
+#    Orchestrates data fetching and all four plot calls for one gene pair.
+#
+#    Two separate FetchData calls are performed:
+#      - hm_df:      uses annotated cell-type Idents → for heatmaps (plots 1 & 2)
+#      - cluster_df: uses RNA_snn_res.0.7 clusters  → for dotplot & violinplot
+#                    (plots 3 & 4)
 # ==============================================================================
-run_pair_pipeline <- function(seurat_obj, genes, cell_order, output_dir,
-                              de_table) {
+run_pair_pipeline <- function(seurat_obj, genes, cell_order, cluster_order,
+                              output_dir, de_table) {
   
   tag <- genes_to_tag(genes)
   message("\n=== Gene pair: ", paste(genes, collapse = " & "), " ===")
@@ -460,35 +578,53 @@ run_pair_pipeline <- function(seurat_obj, genes, cell_order, output_dir,
   }
   
   # Warn if some genes are absent from the DE table (no asterisks will appear)
-  de_genes    <- unique(toupper(de_table$gene))
-  missing_de  <- setdiff(toupper(valid_genes), de_genes)
+  de_genes   <- unique(toupper(de_table$gene))
+  missing_de <- setdiff(toupper(valid_genes), de_genes)
   if (length(missing_de) > 0)
     message("  Note: gene(s) not found in DE file (no asterisks): ",
             paste(missing_de, collapse = ", "))
   
-  # Fetch normalised expression + metadata in one call
-  message("  Fetching expression data...")
-  raw_df <- FetchData(seurat_obj,
+  # --------------------------------------------------------------------------
+  # Fetch 1: cell-type annotated identity → heatmaps
+  # --------------------------------------------------------------------------
+  message("  Fetching expression data (annotated cell types — for heatmaps)...")
+  raw_hm <- FetchData(seurat_obj,
                       vars  = c(valid_genes, "ident", "condition"),
                       layer = "data")
   
-  long_df <- raw_df %>%
+  hm_df <- raw_hm %>%
     pivot_longer(cols      = all_of(valid_genes),
                  names_to  = "Gene",
                  values_to = "Expression")
   
-  # ---- Plot 1: Horizontal Z-Score Heatmap ----------------------------------
+  # --------------------------------------------------------------------------
+  # Fetch 2: cluster identity (RNA_snn_res.0.7) → dotplot & violinplot
+  # --------------------------------------------------------------------------
+  message("  Fetching expression data (Seurat clusters — for dotplot & violin)...")
+  raw_cl <- FetchData(seurat_obj,
+                      vars  = c(valid_genes, "RNA_snn_res.0.7", "condition"),
+                      layer = "data")
+  
+  # Rename cluster column to a safe identifier
+  cluster_df <- raw_cl %>%
+    rename(cluster = `RNA_snn_res.0.7`) %>%
+    mutate(cluster = as.character(cluster)) %>%   # coerce factor → character
+    pivot_longer(cols      = all_of(valid_genes),
+                 names_to  = "Gene",
+                 values_to = "Expression")
+  
+  # ---- Plot 1: Horizontal Z-Score Heatmap (cell types) ---------------------
   message("  Saving horizontal Z-Score heatmap...")
-  p1 <- generate_zscore_heatmap_horizontal(long_df, valid_genes, cell_order)
+  p1 <- generate_zscore_heatmap_horizontal(hm_df, valid_genes, cell_order)
   ggsave(
     filename = file.path(output_dir, paste0(tag, "_ZScore_Heatmap_Horizontal.pdf")),
     plot = p1, width = CONFIG$heatmap_h_width, height = CONFIG$heatmap_h_height,
     dpi = 300
   )
   
-  # ---- Plot 2: Vertical Z-Score Heatmap (with FDR asterisks) --------------
+  # ---- Plot 2: Vertical Z-Score Heatmap (cell types, with FDR asterisks) --
   message("  Saving vertical Z-Score heatmap...")
-  p2 <- generate_zscore_heatmap_vertical(long_df, valid_genes, cell_order,
+  p2 <- generate_zscore_heatmap_vertical(hm_df, valid_genes, cell_order,
                                          de_table)
   ggsave(
     filename = file.path(output_dir, paste0(tag, "_ZScore_Heatmap_Vertical.pdf")),
@@ -496,16 +632,25 @@ run_pair_pipeline <- function(seurat_obj, genes, cell_order, output_dir,
     dpi = 300
   )
   
-  # ---- Plot 3: Custom DotPlot ----------------------------------------------
-  message("  Saving custom DotPlot...")
-  p3 <- generate_dotplot_custom(long_df, valid_genes, cell_order)
+  # ---- Plot 3: Custom DotPlot (clusters) -----------------------------------
+  message("  Saving cluster-based DotPlot...")
+  p3 <- generate_dotplot_custom(cluster_df, valid_genes, cluster_order)
   ggsave(
     filename = file.path(output_dir, paste0(tag, "_DotPlot.pdf")),
     plot = p3, width = CONFIG$dotplot_width, height = CONFIG$dotplot_height,
     dpi = 300
   )
   
-  message("  Done — 3 PDFs saved  [prefix: ", tag, "]")
+  # ---- Plot 4: Violin Plot (clusters) --------------------------------------
+  message("  Saving cluster-based ViolinPlot...")
+  p4 <- generate_violinplot_clusters(cluster_df, valid_genes, cluster_order)
+  ggsave(
+    filename = file.path(output_dir, paste0(tag, "_ViolinPlot.pdf")),
+    plot = p4, width = CONFIG$violinplot_width, height = CONFIG$violinplot_height,
+    dpi = 300
+  )
+  
+  message("  Done — 4 PDFs saved  [prefix: ", tag, "]")
   return(invisible(NULL))
 }
 
@@ -525,10 +670,11 @@ tryCatch({
   message("  DE table loaded: ", nrow(de_table), " unique (gene, cell_type) entries.")
   
   # ---- Load Seurat object --------------------------------------------------
-  #seurat_obj <- readRDS(CONFIG$input_seurat)   # <- Uncomment for production
+  # Uncomment the line below to load the Seurat object from disk:
+  # seurat_obj <- readRDS(CONFIG$input_seurat)
   
-  # ---- Sanitise metadata ---------------------------------------------------
-  message("Sanitising Seurat metadata...")
+  # ---- Sanitise cell-type metadata (used by heatmaps) ---------------------
+  message("Sanitising Seurat cell-type metadata...")
   
   # Normalise condition strings to lowercase
   seurat_obj$condition <- tolower(trimws(seurat_obj$condition))
@@ -541,14 +687,25 @@ tryCatch({
   # Mirror active identity into metadata for FetchData compatibility
   seurat_obj$ident <- Idents(seurat_obj)
   
+  # ---- Build cluster order from RNA_snn_res.0.7 ----------------------------
+  # Extract all unique cluster labels and sort them numerically.
+  # This order is used for both the dotplot and the violin plot.
+  cluster_order <- sort(
+    unique(as.numeric(as.character(seurat_obj$RNA_snn_res.0.7)))
+  )
+  cluster_order <- as.character(cluster_order)   # convert back to character
+  message("  Clusters detected (", length(cluster_order), " total): ",
+          paste(cluster_order, collapse = ", "))
+  
   # ---- Iterate over gene pairs ---------------------------------------------
   for (pair in CONFIG$gene_pairs) {
     run_pair_pipeline(
-      seurat_obj = seurat_obj,
-      genes      = pair,
-      cell_order = CONFIG$cell_lineage_order,
-      output_dir = CONFIG$output_dir,
-      de_table   = de_table
+      seurat_obj    = seurat_obj,
+      genes         = pair,
+      cell_order    = CONFIG$cell_lineage_order,
+      cluster_order = cluster_order,
+      output_dir    = CONFIG$output_dir,
+      de_table      = de_table
     )
   }
   

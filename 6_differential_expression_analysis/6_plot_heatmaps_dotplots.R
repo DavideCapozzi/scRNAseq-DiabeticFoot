@@ -404,211 +404,102 @@ generate_dotplot_custom <- function(hm_data_clusters, genes, cluster_order) {
     )
 }
 
-
 # ------------------------------------------------------------------------------
-# 3D. Violin Plot — CELL-TYPE-BASED, BY CONDITION
-#
-# Y-AXIS STRATEGY — WINSORISATION (FIX v3):
-#
-#   Problem: geom_violin(trim=TRUE) estimates KDE on RAW expression values.
-#   In scRNA-seq, a small number of extreme outlier cells can push max(Expr)
-#   well above the 99th percentile.  The violin body therefore extends to the
-#   raw maximum, which can exceed coord_cartesian(ylim) → "overflow" artefact.
-#
-#   Solution — winsorise before plotting:
-#     Expression values are CAPPED at the per-gene 99th percentile before
-#     being passed to ggplot.  The KDE is estimated on capped data, so by
-#     construction the violin body never exceeds q99.
-#     The panel axis ceiling is set to exactly q99 (no padding required inside
-#     the panel).  Significance brackets are placed above q99 and rendered in
-#     the panel margin via coord_cartesian(clip = "off").
-#
-#   Three invariants guaranteed simultaneously:
-#     (a) Violin body never overflows axis top     → winsorised data + ylim=q99
-#     (b) No blank space above violin inside panel → ylim = q99 (exact ceiling)
-#     (c) Asterisks always visible                 → no limits= on scale_y_cont.;
-#                                                    brackets drawn with clip="off"
-#
-#   The subtitle discloses winsorisation to the reader (scientific transparency).
+# 3D. Violin Plot — CELL-TYPE-BASED, BY CONDITION (CORRECTED v3)
 # ------------------------------------------------------------------------------
-generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
-                                                   de_table) {
+generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order, de_table) {
   
-  cond_colors <- c(healed     = "#2196F3",
-                   not_healed = "#F44336")
+  cond_colors <- c(healed = "#2196F3", not_healed = "#F44336")
   cond_labels <- c(healed = "Healed", not_healed = "Not Healed")
   
   panels <- lapply(seq_along(genes), function(i) {
-    
     gene_name   <- genes[i]
     show_legend <- (i == length(genes))
     
-    # ------------------------------------------------------------------
-    # Step 1: extract & factor the data for this gene
-    # ------------------------------------------------------------------
+    # 1. Preparazione Dati
     df_gene <- hm_data %>%
       filter(Gene == gene_name) %>%
       mutate(
-        ident     = factor(ident,     levels = cell_order),
+        ident     = factor(ident, levels = cell_order),
         condition = factor(condition, levels = c("healed", "not_healed"))
       ) %>%
       filter(!is.na(ident))
     
-    # ------------------------------------------------------------------
-    # Step 2: compute the per-gene winsorisation ceiling (q99)
-    #   q99 is computed on ALL cells for this gene (all cell types &
-    #   conditions combined) so the shared fixed scale remains meaningful
-    #   and comparable across facets.
-    # ------------------------------------------------------------------
-    q99 <- quantile(df_gene$Expression, 0.99, na.rm = TRUE)
-    
-    # Guard: if q99 == 0 (gene nearly silent), use max to avoid zero-range axis
-    if (q99 == 0) q99 <- max(df_gene$Expression, na.rm = TRUE)
-    if (q99 == 0) q99 <- 1   # absolute fallback for all-zero genes
-    
-    # ------------------------------------------------------------------
-    # Step 3: winsorise — cap Expression at q99
-    #   After capping, KDE from geom_violin(trim=TRUE) reaches exactly q99
-    #   at its upper tip, so the violin body cannot overflow ylim = q99.
-    # ------------------------------------------------------------------
+    # 2. SMART TRIMMING CORRETTO (Previene l'errore di dplyr)
     df_plot <- df_gene %>%
-      mutate(Expression = pmin(Expression, q99))
+      group_by(ident) %>%
+      mutate(
+        q_limit = {
+          # Usiamo le {} per isolare l'operazione. Il risultato finale sarà un 
+          # singolo scalare numerico, che mutate() accetterà senza errori.
+          nz <- Expression[Expression > 0]
+          lim <- if(length(nz) > 5) {
+            quantile(nz, 0.995, na.rm = TRUE)
+          } else {
+            max(Expression, na.rm = TRUE)
+          }
+          # Assicura che ci sia sempre un tetto minimo di 0.05
+          max(lim, 0.05, na.rm = TRUE)
+        }
+      ) %>%
+      filter(Expression <= q_limit) %>%
+      ungroup()
     
-    # ------------------------------------------------------------------
-    # Step 4: significance bracket positions
-    #   Brackets are placed ABOVE q99 (in the panel margin).
-    #   delta_brk and delta_txt scale with q99 for visual consistency.
-    # ------------------------------------------------------------------
-    delta_brk <- q99 * 0.09 + 0.07   # bracket bar above axis top
-    delta_txt <- q99 * 0.04 + 0.06   # asterisk above bracket bar
+    # 3. Posizionamento Dinamico delle Bracket
+    bracket_pos <- df_plot %>%
+      group_by(ident) %>%
+      summarise(local_max = max(Expression, na.rm = TRUE), .groups = "drop") %>%
+      mutate(
+        y_bracket = local_max + (local_max * 0.15) + 0.05,
+        y_text    = y_bracket + (local_max * 0.15) + 0.05
+      )
     
-    y_brk <- q99 + delta_brk
-    y_txt <- y_brk + delta_txt
-    
+    # Merge con la tabella delle significatività
     sig_df <- de_table %>%
       filter(gene == toupper(gene_name), stars != "") %>%
       select(ident = cell_type, stars) %>%
       mutate(ident = factor(ident, levels = cell_order)) %>%
       filter(!is.na(ident)) %>%
-      mutate(
-        y_bracket = y_brk,
-        y_text    = y_txt,
-        x_lo  = 1L, x_hi = 2L, x_mid = 1.5
-      )
+      inner_join(bracket_pos, by = "ident") %>%
+      mutate(x_lo = 1L, x_hi = 2L, x_mid = 1.5)
     
-    # ------------------------------------------------------------------
-    # Step 5: build the plot
-    # ------------------------------------------------------------------
-    p <- ggplot(df_plot,
-                aes(x = condition, y = Expression, fill = condition)) +
-      
-      # ---- Violin body (KDE on winsorised data → never exceeds q99) ----
-    geom_violin(
-      trim      = TRUE,
-      scale     = "width",
-      alpha     = 1.00,
-      linewidth = 0.40,
-      color     = "grey20"
-    ) +
-      
-      # ---- Significance brackets in panel margin (clip = "off") --------
-    {
-      if (nrow(sig_df) > 0) {
-        list(
-          geom_segment(                          # horizontal bar
-            data        = sig_df,
-            aes(x = x_lo, xend = x_hi,
-                y = y_bracket, yend = y_bracket),
-            inherit.aes = FALSE,
-            linewidth   = 0.50,
-            color       = "grey10"
-          ),
-          geom_segment(                          # left tick
-            data        = sig_df,
-            aes(x = x_lo, xend = x_lo,
-                y = y_bracket - 0.06, yend = y_bracket),
-            inherit.aes = FALSE,
-            linewidth   = 0.50,
-            color       = "grey10"
-          ),
-          geom_segment(                          # right tick
-            data        = sig_df,
-            aes(x = x_hi, xend = x_hi,
-                y = y_bracket - 0.06, yend = y_bracket),
-            inherit.aes = FALSE,
-            linewidth   = 0.50,
-            color       = "grey10"
-          ),
-          geom_text(                             # asterisk label
-            data        = sig_df,
-            aes(x = x_mid, y = y_text, label = stars),
-            inherit.aes = FALSE,
-            size        = 5,
-            fontface    = "bold",
-            color       = "grey5",
-            vjust       = 0
+    # 4. Costruzione del Plot
+    p <- ggplot(df_plot, aes(x = condition, y = Expression, fill = condition)) +
+      geom_violin(
+        trim = TRUE, scale = "width", adjust = 1.5, alpha = 1.00,
+        linewidth = 0.40, color = "grey20"
+      ) +
+      {
+        if (nrow(sig_df) > 0) {
+          list(
+            geom_segment(data = sig_df, aes(x = x_lo, xend = x_hi, y = y_bracket, yend = y_bracket), inherit.aes = FALSE, linewidth = 0.50, color = "grey10"),
+            geom_segment(data = sig_df, aes(x = x_lo, xend = x_lo, y = y_bracket - (y_bracket*0.03), yend = y_bracket), inherit.aes = FALSE, linewidth = 0.50, color = "grey10"),
+            geom_segment(data = sig_df, aes(x = x_hi, xend = x_hi, y = y_bracket - (y_bracket*0.03), yend = y_bracket), inherit.aes = FALSE, linewidth = 0.50, color = "grey10"),
+            geom_text(data = sig_df, aes(x = x_mid, y = y_text, label = stars), inherit.aes = FALSE, size = 5, fontface = "bold", color = "grey5", vjust = 0)
           )
-        )
-      }
-    } +
-      
-      # ---- Facets: fixed scale across cell types for comparability -----
-    facet_wrap(~ ident, nrow = 1, scales = "fixed") +
-      
-      # ---- Y-axis scale ------------------------------------------------
-    # No limits= here — scale_y_continuous with limits= would discard
-    # any geom positioned outside the range (the v1 bug).
-    # A small bottom expansion (2 %) prevents the violin base from
-    # touching the axis line.  No top expansion: axis ends at q99.
-    scale_y_continuous(expand = expansion(mult = c(0.02, 0))) +
-      
-      # coord_cartesian clips the visible panel at ylim = c(0, q99).
-      # Because the KDE was estimated on winsorised data (max = q99),
-      # the violin body fits exactly within this range — no overflow.
-      # clip = "off" renders the significance brackets above q99 in the
-      # panel margin without extending the axis.
-      coord_cartesian(ylim = c(0, q99), clip = "off") +
-      
-      scale_fill_manual(values = cond_colors, labels = cond_labels,
-                        name   = "Condition",
-                        guide  = if (show_legend) "legend" else "none") +
+        }
+      } +
+      facet_wrap(~ ident, nrow = 1, scales = "free_y") +
+      scale_y_sqrt(expand = expansion(mult = c(0.01, 0.25))) +
+      scale_fill_manual(values = cond_colors, labels = cond_labels, name = "Condition", guide = if (show_legend) "legend" else "none") +
       scale_x_discrete(labels = cond_labels) +
-      
-      labs(title = gene_name, x = NULL, y = "Normalised Expression") +
-      
-      # ---- Publication theme -------------------------------------------
-    theme_classic(base_size = 12) +
+      labs(title = gene_name, x = NULL, y = "Normalised Expression (Sqrt Scale)") +
+      theme_classic(base_size = 12) +
       theme(
-        plot.title        = element_text(face = "bold.italic", size = 14,
-                                         hjust = 0.5, margin = margin(b = 6)),
-        axis.text.x       = element_text(angle = 38, hjust = 1, vjust = 1,
-                                         size = 8, color = "black"),
+        plot.title        = element_text(face = "bold.italic", size = 14, hjust = 0.5, margin = margin(b = 6)),
+        axis.text.x       = element_text(angle = 38, hjust = 1, vjust = 1, size = 8, color = "black"),
         axis.text.y       = element_text(size = 8.5, color = "black"),
-        axis.title.y      = element_text(size = 10.5, face = "bold",
-                                         margin = margin(r = 5)),
+        axis.title.y      = element_text(size = 10.5, face = "bold", margin = margin(r = 5)),
         axis.line         = element_line(color = "black", linewidth = 0.45),
-        axis.ticks        = element_line(color = "black", linewidth = 0.38),
-        axis.ticks.length = unit(3, "pt"),
-        strip.text        = element_text(face = "italic", size = 7.5,
-                                         color = "black",
-                                         margin = margin(b = 3, t = 2)),
+        strip.text        = element_text(face = "italic", size = 7.5, color = "black", margin = margin(b = 3, t = 2)),
         strip.background  = element_blank(),
-        strip.clip        = "off",
-        panel.background  = element_rect(fill = "white", color = NA),
-        panel.border      = element_blank(),
-        panel.grid        = element_blank(),
         panel.spacing     = unit(0.4, "lines"),
         legend.position   = if (show_legend) "bottom" else "none",
         legend.direction  = "horizontal",
         legend.key.size   = unit(9, "pt"),
-        legend.title      = element_text(size = 9, face = "bold"),
-        legend.text       = element_text(size = 9),
-        legend.background = element_blank(),
         legend.margin     = margin(t = 4),
-        plot.background   = element_rect(fill = "white", color = NA),
-        plot.margin       = margin(4, 6, 4, 6)
+        plot.margin       = margin(10, 6, 4, 6)
       )
-    
     p
   })
   
@@ -616,86 +507,62 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
     plot_annotation(
       title    = paste(genes, collapse = " & "),
       subtitle = paste0(
-        "Normalised expression per annotated cell type  \u00b7  healed vs not_healed  \u00b7  ",
-        "values winsorised at 99th percentile  \u00b7  * FDR<0.05  ** FDR<0.01  *** FDR<0.001"
+        "Normalised expression (Sqrt Scale)  \u00b7  healed vs not_healed (free Y-scales)  \u00b7  ",
+        "KDE smoothed (adjust=1.5) for sparsity  \u00b7  * FDR<0.05  ** FDR<0.01  *** FDR<0.001"
       ),
       theme = theme(
-        plot.title      = element_text(face = "bold", size = 15, hjust = 0.5,
-                                       margin = margin(b = 3)),
-        plot.subtitle   = element_text(size = 9, hjust = 0.5, color = "grey45",
-                                       margin = margin(b = 8)),
+        plot.title      = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b = 3)),
+        plot.subtitle   = element_text(size = 9, hjust = 0.5, color = "grey45", margin = margin(b = 8)),
         plot.background = element_rect(fill = "white", color = NA)
       )
     )
 }
 
-
 # ------------------------------------------------------------------------------
-# 3E. Violin Plot — ALL CELLS POOLED PER CELL TYPE
+# 3E. Violin Plot — ALL CELLS POOLED PER CELL TYPE (CORRECTED)
 # ------------------------------------------------------------------------------
 generate_violinplot_allcells <- function(hm_data, genes, cell_order) {
-  
   n_ct       <- length(cell_order)
-  ct_palette <- setNames(
-    hcl.colors(n_ct, palette = "Spectral", rev = FALSE),
-    cell_order
-  )
+  ct_palette <- setNames(hcl.colors(n_ct, palette = "Spectral", rev = FALSE), cell_order)
   
   panels <- lapply(seq_along(genes), function(i) {
     gene_name <- genes[i]
-    
     df_gene <- hm_data %>%
       filter(Gene == gene_name) %>%
       mutate(ident = factor(ident, levels = cell_order)) %>%
       filter(!is.na(ident))
     
     ggplot(df_gene, aes(x = ident, y = Expression, fill = ident)) +
-      geom_violin(
-        trim      = TRUE,
-        scale     = "width",
-        alpha     = 1.00,
-        linewidth = 0.40,
-        color     = "grey20"
-      ) +
+      geom_violin(trim = TRUE, scale = "width", alpha = 1.00, linewidth = 0.40, color = "grey20") +
+      # RISOLUZIONE SQUASHING: Trasformazione Square Root (Radice Quadrata)
+      # Ottima per preservare la scala globale permettendo l'osservazione di cluster a bassa espressione
+      scale_y_sqrt(expand = expansion(mult = c(0.01, 0.05))) +
       scale_fill_manual(values  = ct_palette, guide = "none") +
       scale_color_manual(values = ct_palette, guide = "none") +
       scale_x_discrete(expand = expansion(add = 0.60)) +
-      labs(title = gene_name, x = NULL, y = "Normalised Expression") +
+      labs(title = gene_name, x = NULL, y = "Normalised Expression (Sqrt Scale)") +
       theme_classic(base_size = 12) +
       theme(
-        plot.title        = element_text(face = "bold.italic", size = 14,
-                                         hjust = 0.5, margin = margin(b = 5)),
-        axis.text.x       = element_text(angle = 40, hjust = 1, vjust = 1,
-                                         size = 9, color = "black",
-                                         face = "bold.italic"),
+        plot.title        = element_text(face = "bold.italic", size = 14, hjust = 0.5, margin = margin(b = 5)),
+        axis.text.x       = element_text(angle = 40, hjust = 1, vjust = 1, size = 9, color = "black", face = "bold.italic"),
         axis.text.y       = element_text(size = 9, color = "black"),
-        axis.title.y      = element_text(size = 10.5, face = "bold",
-                                         margin = margin(r = 5)),
+        axis.title.y      = element_text(size = 10.5, face = "bold", margin = margin(r = 5)),
         axis.line         = element_line(color = "black", linewidth = 0.45),
-        axis.ticks        = element_line(color = "black", linewidth = 0.38),
-        axis.ticks.length = unit(3, "pt"),
-        panel.background  = element_rect(fill = "white", color = NA),
-        panel.border      = element_blank(),
-        panel.grid        = element_blank(),
-        plot.background   = element_rect(fill = "white", color = NA),
-        plot.margin       = margin(4, 6, 4, 6)
+        plot.margin       = margin(10, 6, 4, 6)
       )
   })
   
   wrap_plots(panels, ncol = 1) +
     plot_annotation(
       title    = paste(genes, collapse = " & "),
-      subtitle = "Normalised expression per annotated cell type  \u00b7  all cells (healed + not_healed pooled)",
+      subtitle = "Normalised expression per annotated cell type  \u00b7  Y-axis is Square Root transformed to enhance low-expression visibility",
       theme    = theme(
-        plot.title      = element_text(face = "bold", size = 15, hjust = 0.5,
-                                       margin = margin(b = 3)),
-        plot.subtitle   = element_text(size = 9, hjust = 0.5, color = "grey45",
-                                       margin = margin(b = 8)),
+        plot.title      = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b = 3)),
+        plot.subtitle   = element_text(size = 9, hjust = 0.5, color = "grey45", margin = margin(b = 8)),
         plot.background = element_rect(fill = "white", color = NA)
       )
     )
 }
-
 
 # ==============================================================================
 # 4. PER-PAIR PIPELINE

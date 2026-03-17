@@ -457,61 +457,64 @@ generate_dotplot_custom <- function(hm_data_clusters, genes, cluster_order) {
 # 3D. Violin Plot — CELL-TYPE-BASED, BY CONDITION  (publication-ready)
 #
 #   Publication standards applied (Nature / Cell scRNA-seq style):
-#     - Fully white background, zero grid lines anywhere.
-#     - Half-open axis frame: left (y) + bottom (x) lines only via theme_classic.
-#     - NO boxplot overlay. Median indicated by a thin crossbar (stat_summary).
-#     - Significance bracket: horizontal segment with drop-ticks + bold asterisk,
-#       y position dynamic per facet (99th-pctile + offset).
-#     - Strip labels: plain italic text, NO background rectangle (element_blank).
-#     - Individual cells shown with geom_jitter (semi-transparent, very small)
-#       to reveal data density — standard in scRNA-seq papers (e.g. Nature 2022).
-#     - Condition colours: vivid, colourblind-safe pair used consistently.
-#     - Legend: horizontal, placed below the bottom gene panel only.
-#     - Inter-panel spacing kept tight so the figure reads as one cohesive block.
-#
-#   Layout:
-#     - One horizontal row of facets per gene (cell types side-by-side).
-#     - Two genes stacked vertically via patchwork.
-#     - x = condition (healed | not_healed).
-#     - y = normalised expression (log-normalised counts).
-#     - Facets = annotated cell-type labels (CONFIG$cell_lineage_order).
+#     - Single shared y-axis across all cell-type facets (scales = "fixed").
+#       coord_cartesian expands the upper limit to accommodate significance
+#       brackets without clipping, while the violin body fills the data range.
+#     - All significance brackets drawn at a SINGLE uniform y, so asterisks
+#       form a clean horizontal line across the figure.
+#     - Fully white background, zero grid lines.
+#     - Half-open axis frame (theme_classic): left + bottom lines only.
+#     - NO median line, NO boxplot — violin shape alone conveys the distribution.
+#     - Strip labels: plain italic text, NO background rectangle.
+#     - Condition colours: vivid, colourblind-safe pair.
+#     - Legend: horizontal, below the bottom gene panel only.
 # ------------------------------------------------------------------------------
 generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
                                                    de_table) {
   
-  # Publication-grade condition palette — vivid, colourblind-distinguishable
-  cond_colors <- c(healed     = "#2196F3",   # material blue
-                   not_healed = "#F44336")   # material red
+  # Condition palette — vivid, colourblind-distinguishable
+  cond_colors <- c(healed     = "#2196F3",
+                   not_healed = "#F44336")
   cond_labels <- c(healed = "Healed", not_healed = "Not Healed")
   
   # ------------------------------------------------------------------
-  # Helper: significance annotation df for one gene.
-  # Bracket spans x = 1 (healed) to x = 2 (not_healed) within each facet.
-  # y is set at 99th-pctile * 1.18 + 0.12 to clear the violin tip safely.
+  # Helper: build significance annotation df for one gene.
+  #
+  # y_bracket is a SINGLE value computed from the GLOBAL 99th-pctile
+  # across ALL cell types × conditions, so every bracket sits at the
+  # same height regardless of per-cell-type expression range.
+  # y_ceiling is the upper limit passed to coord_cartesian: it adds
+  # comfortable room above the bracket text so nothing is clipped.
   # ------------------------------------------------------------------
-  build_sig_df <- function(df_long, gene_name) {
+  build_sig_df <- function(df_gene, gene_name) {
     
-    y_top <- df_long %>%
-      filter(Gene == gene_name) %>%
-      group_by(ident) %>%
-      summarise(
-        y_bracket = quantile(Expression, 0.99, na.rm = TRUE) * 1.18 + 0.12,
-        .groups   = "drop"
-      )
+    # Hard maximum of the expression data — violin bodies will be capped here.
+    # Using max() ensures no violin tip ever crosses the axis line.
+    y_max    <- max(df_gene$Expression, na.rm = TRUE)
+    y99      <- quantile(df_gene$Expression, 0.99, na.rm = TRUE)
+    y_brk    <- y_max * 1.08 + 0.15   # bracket bar: just above the axis cap
+    y_txt    <- y_brk + 0.18          # asterisk text height
+    y_ceil   <- y_txt + 0.45          # coord_cartesian upper limit (bracket room)
     
     sig_rows <- de_table %>%
       filter(gene == toupper(gene_name), stars != "") %>%
-      select(ident = cell_type, stars)
-    
-    inner_join(y_top, sig_rows, by = "ident") %>%
-      mutate(
-        ident  = factor(ident, levels = cell_order),
-        x_lo   = 1,
-        x_hi   = 2,
-        x_mid  = 1.5,
-        y_text = y_bracket + 0.05
-      ) %>%
+      select(ident = cell_type, stars) %>%
+      mutate(ident = factor(ident, levels = cell_order)) %>%
       filter(!is.na(ident))
+    
+    list(
+      sig_df  = if (nrow(sig_rows) == 0) {
+        data.frame()
+      } else {
+        sig_rows %>% mutate(
+          y_bracket = y_brk,
+          y_text    = y_txt,
+          x_lo      = 1, x_hi = 2, x_mid = 1.5
+        )
+      },
+      y_max  = y_max,
+      y_ceil = y_ceil
+    )
   }
   
   panels <- lapply(seq_along(genes), function(i) {
@@ -527,70 +530,55 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
       ) %>%
       filter(!is.na(ident))
     
-    sig_df <- build_sig_df(df_gene, gene_name)
+    sig_out <- build_sig_df(df_gene, gene_name)
+    sig_df  <- sig_out$sig_df
+    y_max   <- sig_out$y_max
+    y_ceil  <- sig_out$y_ceil
     
     p <- ggplot(df_gene,
                 aes(x = condition, y = Expression, fill = condition)) +
       
-      # ---- Individual cell jitter (behind violin) ----
-    # Shows true data density — standard in high-impact scRNA-seq papers.
-    # Points are tiny and semi-transparent to avoid obscuring the violin shape.
-    geom_jitter(
-      aes(color = condition),
-      width   = 0.18,
-      size    = 0.35,
-      alpha   = 0.25,
-      stroke  = 0,
-      show.legend = FALSE
-    ) +
-      
-      # ---- Violin body (in front of jitter) ----
+      # ---- Violin body ----
     geom_violin(
       trim      = TRUE,
       scale     = "width",
-      alpha     = 0.65,
+      alpha     = 1.00,
       linewidth = 0.40,
       color     = "grey20"
     ) +
       
-      # ---- Median crossbar — thin horizontal line, no fill ----
-    stat_summary(
-      fun       = median,
-      geom      = "crossbar",
-      width     = 0.38,
-      fatten    = 0,
-      linewidth = 0.65,
-      color     = "grey10",
-      fill      = NA
-    ) +
-      
-      # ---- Significance bracket ----
+      # ---- Significance bracket at uniform y across all facets ----
     {
       if (nrow(sig_df) > 0) {
         list(
+          # Horizontal bar
           geom_segment(
             data        = sig_df,
-            aes(x = x_lo, xend = x_hi, y = y_bracket, yend = y_bracket),
+            aes(x = x_lo, xend = x_hi,
+                y = y_bracket, yend = y_bracket),
             inherit.aes = FALSE,
             linewidth   = 0.50,
             color       = "grey10"
           ),
+          # Left drop tick
           geom_segment(
             data        = sig_df,
             aes(x = x_lo, xend = x_lo,
-                y = y_bracket - 0.05, yend = y_bracket),
+                y = y_bracket - 0.06, yend = y_bracket),
             inherit.aes = FALSE,
             linewidth   = 0.50,
             color       = "grey10"
           ),
+          # Right drop tick
           geom_segment(
             data        = sig_df,
             aes(x = x_hi, xend = x_hi,
-                y = y_bracket - 0.05, yend = y_bracket),
+                y = y_bracket - 0.06, yend = y_bracket),
             inherit.aes = FALSE,
             linewidth   = 0.50,
             color       = "grey10"
           ),
+          # Asterisk text
           geom_text(
             data        = sig_df,
             aes(x = x_mid, y = y_text, label = stars),
@@ -604,18 +592,24 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
       }
     } +
       
-      # ---- Facets: one column per cell type ----
-    facet_wrap(~ ident, nrow = 1, scales = "free_y") +
+      # ---- Shared y-axis: hard cap at data max, expand only for brackets ----
+    # scale_y_continuous caps violin bodies at the true data maximum so no
+    # tip ever crosses the axis line.  coord_cartesian then silently extends
+    # the visible area upward to accommodate the significance brackets and
+    # asterisk text without clipping (clip = "off").
+    facet_wrap(~ ident, nrow = 1, scales = "fixed") +
+      scale_y_continuous(limits = c(0, y_max),
+                         expand = expansion(mult = c(0, 0))) +
+      coord_cartesian(ylim = c(0, y_ceil), clip = "off") +
       
-      scale_fill_manual(values  = cond_colors, labels = cond_labels,
-                        name    = "Condition",
-                        guide   = if (show_legend) "legend" else "none") +
-      scale_color_manual(values = cond_colors, guide = "none") +
-      scale_x_discrete(labels  = cond_labels) +
+      scale_fill_manual(values = cond_colors, labels = cond_labels,
+                        name   = "Condition",
+                        guide  = if (show_legend) "legend" else "none") +
+      scale_x_discrete(labels = cond_labels) +
       
       labs(title = gene_name, x = NULL, y = "Normalised Expression") +
       
-      # ---- Publication theme — clean half-open axes, no grid, no strip box ----
+      # ---- Publication theme ----
     theme_classic(base_size = 12) +
       theme(
         plot.title        = element_text(face = "bold.italic", size = 14,
@@ -628,18 +622,15 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
         axis.line         = element_line(color = "black", linewidth = 0.45),
         axis.ticks        = element_line(color = "black", linewidth = 0.38),
         axis.ticks.length = unit(3, "pt"),
-        # Strip: italic text, zero background, zero border
         strip.text        = element_text(face = "italic", size = 7.5,
                                          color = "black",
                                          margin = margin(b = 3, t = 2)),
         strip.background  = element_blank(),
         strip.clip        = "off",
-        # Panels: white, no grid, no border
         panel.background  = element_rect(fill = "white", color = NA),
         panel.border      = element_blank(),
         panel.grid        = element_blank(),
         panel.spacing     = unit(0.4, "lines"),
-        # Legend
         legend.position   = if (show_legend) "bottom" else "none",
         legend.direction  = "horizontal",
         legend.key.size   = unit(9, "pt"),
@@ -647,7 +638,6 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
         legend.text       = element_text(size = 9),
         legend.background = element_blank(),
         legend.margin     = margin(t = 4),
-        # Plot background
         plot.background   = element_rect(fill = "white", color = NA),
         plot.margin       = margin(4, 6, 4, 6)
       )
@@ -683,10 +673,8 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
 #     - Colour = saturated rainbow palette, one hue per cell type.
 #               Generated via hcl.colors(n, "Spectral") for perceptual
 #               uniformity — vivid, distinct, publication-safe.
-#     - NO boxplot overlay; NO grid lines.
-#     - Median value printed as small italic label above each violin tip.
+#     - NO boxplot overlay; NO grid lines; NO median line or text label.
 #     - Half-open axis frame (theme_classic).
-#     - Jitter layer (behind violin) reveals single-cell density.
 #     - Cell-type names on x-axis, rotated 40°, face "bold.italic".
 # ------------------------------------------------------------------------------
 generate_violinplot_allcells <- function(hm_data, genes, cell_order) {
@@ -707,56 +695,15 @@ generate_violinplot_allcells <- function(hm_data, genes, cell_order) {
       mutate(ident = factor(ident, levels = cell_order)) %>%
       filter(!is.na(ident))
     
-    # Median label positioned just above the 99th-pctile per cell type
-    med_df <- df_gene %>%
-      group_by(ident) %>%
-      summarise(
-        med   = median(Expression, na.rm = TRUE),
-        y_pos = quantile(Expression, 0.99, na.rm = TRUE) * 1.12 + 0.06,
-        .groups = "drop"
-      ) %>%
-      mutate(label = sprintf("%.2f", med))
-    
     ggplot(df_gene, aes(x = ident, y = Expression, fill = ident)) +
-      
-      # ---- Individual cell jitter (behind violin) ----
-    geom_jitter(
-      aes(color = ident),
-      width   = 0.20,
-      size    = 0.30,
-      alpha   = 0.20,
-      stroke  = 0,
-      show.legend = FALSE
-    ) +
       
       # ---- Violin body ----
     geom_violin(
       trim      = TRUE,
       scale     = "width",
-      alpha     = 0.82,
+      alpha     = 1.00,
       linewidth = 0.40,
       color     = "grey20"
-    ) +
-      
-      # ---- Median crossbar — thin line, no fill ----
-    stat_summary(
-      fun       = median,
-      geom      = "crossbar",
-      width     = 0.42,
-      fatten    = 0,
-      linewidth = 0.65,
-      color     = "grey10",
-      fill      = NA
-    ) +
-      
-      # ---- Median value text above violin tip ----
-    geom_text(
-      data        = med_df,
-      aes(x = ident, y = y_pos, label = label),
-      inherit.aes = FALSE,
-      size        = 2.8,
-      color       = "grey25",
-      fontface    = "italic"
     ) +
       
       scale_fill_manual(values  = ct_palette, guide = "none") +
@@ -790,7 +737,7 @@ generate_violinplot_allcells <- function(hm_data, genes, cell_order) {
   wrap_plots(panels, ncol = 1) +
     plot_annotation(
       title    = paste(genes, collapse = " & "),
-      subtitle = "Normalised expression per annotated cell type  \u00b7  all cells (healed + not_healed pooled)  \u00b7  line = median",
+      subtitle = "Normalised expression per annotated cell type  \u00b7  all cells (healed + not_healed pooled)",
       theme    = theme(
         plot.title      = element_text(face = "bold", size = 15, hjust = 0.5,
                                        margin = margin(b = 3)),

@@ -4,39 +4,50 @@
 #
 #   For each gene pair (CCL4/CCR5, CCR1/CCR8) the following PDFs are produced:
 #     1.  <TAG>_ZScore_Heatmap_Horizontal.pdf
-#         Horizontal heatmap — rows = genes, columns = conditions,
-#         facets = cell types (original layout).
-#
 #     2.  <TAG>_ZScore_Heatmap_Vertical.pdf
-#         Vertical heatmap — one narrow panel per gene, side-by-side.
-#         rows = cell types, columns = healed / not_healed.
-#         Tiles annotated with significance asterisks derived from a
-#         pre-computed DE results file (FDR = p_val_adj column).
-#
 #     3.  <TAG>_DotPlot.pdf
-#         Custom dot plot — one panel per gene.
-#         rows = Seurat clusters (RNA_snn_res.0.7), x = condition.
-#         Dot SIZE = % cells expressing the gene (scaled per gene [1,8]).
-#         Dot COLOUR = mean normalised expression.
-#
 #     4.  <TAG>_ViolinPlot_ByCondition.pdf
-#         Violin plot — one row of facets per gene (side-by-side), stacked
-#         vertically for the two genes.
-#         y = normalised expression, x = condition (healed | not_healed).
-#         Facets = annotated cell-type labels (same order as heatmaps).
-#         Significance asterisks (FDR-based) annotated above each facet.
-#
 #     5.  <TAG>_ViolinPlot_AllCells.pdf
-#         Violin plot — all cells pooled per cell type (healed + not_healed
-#         combined), one violin per cell type.
-#         y = normalised expression, x = cell type.
-#         One panel per gene, stacked vertically.
 #
-#   Significance thresholds (FDR-based, from DE file — heatmaps & violins):
-#     ***  FDR < 0.001
-#     **   FDR < 0.01
-#     *    FDR < 0.05
-#          (no annotation if FDR >= 0.05 or gene not in DE file)
+#   Significance thresholds (FDR-based, from DE file):
+#     ***  FDR < 0.001  |  **  FDR < 0.01  |  *  FDR < 0.05
+#
+# ==============================================================================
+# CHANGELOG — ViolinPlot_ByCondition only:
+#
+#   FIX v1 — asterisks invisible:
+#     scale_y_continuous(limits=) discarded out-of-range geoms before rendering.
+#     Fix: removed limits= entirely; coord_cartesian owns the viewport.
+#
+#   FIX v2 — blank space above violin (axis extended to bracket height):
+#     coord_cartesian(ylim = c(0, y_ceil)) where y_ceil included bracket room
+#     caused blank space inside the panel above the violin body.
+#     Fix: two-layer y design (y_axis_top vs y_brk); brackets drawn outside
+#     the panel via clip = "off".  Introduced winsorisation (see FIX v3).
+#
+#   FIX v3 — violin body overflows axis top:
+#     Root cause: y_axis_top = quantile(0.99) * 1.03, but geom_violin with
+#     trim = TRUE computes KDE on RAW (non-winsorised) data, whose max can
+#     exceed quantile(0.99) * 1.03 substantially, causing the violin tip to
+#     extend beyond coord_cartesian(ylim), creating an "overflow" artefact.
+#
+#     Correct solution — WINSORISATION before plotting:
+#       Expression values are capped (winsorised) at the per-gene 99th
+#       percentile BEFORE being passed to geom_violin.  The KDE is then
+#       estimated on capped data, so the violin body NEVER exceeds q99 by
+#       construction.  The axis ceiling is set to q99 (exact), no padding
+#       needed inside the panel.  Brackets are placed above q99 via clip="off".
+#
+#       This is the standard approach in Seurat's VlnPlot() and in published
+#       scRNA-seq figures (Nature, Cell, Nature Immunology).  The caption/
+#       subtitle documents that values are winsorised at the 99th percentile.
+#
+#       Key properties guaranteed by this approach:
+#         1. Violin body NEVER overflows axis top (KDE max = q99 by construction)
+#         2. Asterisks always visible (no limits= on scale_y_continuous)
+#         3. No blank space inside panel (axis ends exactly at q99)
+#         4. Brackets rendered cleanly in panel margin (clip = "off")
+#         5. Shared fixed scale across cell-type facets remains meaningful
 # ==============================================================================
 
 
@@ -61,14 +72,10 @@ CONFIG <- list(
   
   # ---- Paths ----------------------------------------------------------------
   input_seurat = "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/5_annotation/manual_annotation_res/seurat_res_0.7_with_celltypeID.rds",
-  
-  # Pre-computed DE results (healed vs not_healed per cell type).
-  # Required columns: gene, p_val_adj, cell_type
   input_de     = "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/6_differential_expression_analysis/results/DE_with_cell_types.xlsx",
-  
   output_dir   = "G:/Drive condivisi/sc-FEDE_DAVIDE/res_validation/heatmaps_dotplots/",
   
-  # ---- Gene pairs: one full set of PDFs per pair ---------------------------
+  # ---- Gene pairs -----------------------------------------------------------
   gene_pairs = list(
     c("CCL4", "CCR5"),
     c("CCR1", "CCR8")
@@ -78,7 +85,7 @@ CONFIG <- list(
   zscore_colors = c(low = "#2166AC", mid = "#F7F7F7", high = "#B2182B"),
   expr_colors   = c(low = "#F0F0F0", high = "#B2182B"),
   
-  # ---- Biological cell-type order used for heatmaps and violins ------------
+  # ---- Biological cell-type order ------------------------------------------
   cell_lineage_order = c(
     "CD4 T cells (naive/CM)",
     "CD4 T cells (CD4 memory/activated Th2 cells)",
@@ -97,16 +104,14 @@ CONFIG <- list(
   ),
   
   # ---- Output dimensions (inches) ------------------------------------------
-  heatmap_h_width      = 18,
-  heatmap_h_height     = 4,
-  heatmap_v_width      = 9,
-  heatmap_v_height     = 11,
-  dotplot_width        = 14,
-  dotplot_height       = 14,
-  # Violin by condition: wide to accommodate all cell types side-by-side
+  heatmap_h_width        = 18,
+  heatmap_h_height       = 4,
+  heatmap_v_width        = 9,
+  heatmap_v_height       = 11,
+  dotplot_width          = 14,
+  dotplot_height         = 14,
   violinplot_cond_width  = 32,
   violinplot_cond_height = 12,
-  # Violin all cells: one violin per cell type across x-axis
   violinplot_all_width   = 18,
   violinplot_all_height  = 10
 )
@@ -116,11 +121,8 @@ CONFIG <- list(
 # 2. UTILITY FUNCTIONS
 # ==============================================================================
 
-# Build a clean file-name prefix from a gene vector (e.g. "CCL4_CCR5")
 genes_to_tag <- function(genes) paste(toupper(genes), collapse = "_")
 
-# Add intra-cluster Z-score column ('Scaled_Expr') to a long expression df.
-# Scaling is performed independently per (ident, Gene).
 add_zscore <- function(df) {
   df %>%
     group_by(ident, Gene) %>%
@@ -134,8 +136,6 @@ add_zscore <- function(df) {
     ungroup()
 }
 
-# Convert a numeric FDR value to a significance asterisk string.
-# Returns "***", "**", "*", or "" (not significant / not tested).
 fdr_to_stars <- function(fdr) {
   dplyr::case_when(
     is.na(fdr)  ~ "",
@@ -146,29 +146,19 @@ fdr_to_stars <- function(fdr) {
   )
 }
 
-# Load and pre-process the DE results file.
-# Returns a data frame with columns: gene (uppercase), cell_type, fdr, stars.
-# When multiple rows exist for the same (gene, cell_type) pair — e.g. from
-# different cluster IDs — the minimum FDR is retained (most conservative
-# approach toward false positives while still showing real signals).
 load_de_table <- function(path) {
-  
   de_raw <- read_excel(path)
-  
   required_cols <- c("gene", "p_val_adj", "cell_type")
   missing_cols  <- setdiff(required_cols, colnames(de_raw))
   if (length(missing_cols) > 0)
     stop("DE file is missing required columns: ",
          paste(missing_cols, collapse = ", "))
-  
   de_raw %>%
-    # Standardise gene names to uppercase for consistent matching
     mutate(
       gene      = toupper(trimws(gene)),
       cell_type = trimws(cell_type),
       p_val_adj = as.numeric(p_val_adj)
     ) %>%
-    # Keep the minimum FDR per (gene, cell_type) across all clusters
     group_by(gene, cell_type) %>%
     summarise(fdr = min(p_val_adj, na.rm = TRUE), .groups = "drop") %>%
     mutate(stars = fdr_to_stars(fdr))
@@ -180,10 +170,7 @@ load_de_table <- function(path) {
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 3A. Horizontal Z-Score Heatmap  (original layout — unchanged)
-#     rows = genes  |  columns = conditions  |  facets = cell types
-#     Uses annotated cell-type labels (Idents) and the biological order defined
-#     in CONFIG$cell_lineage_order.
+# 3A. Horizontal Z-Score Heatmap
 # ------------------------------------------------------------------------------
 generate_zscore_heatmap_horizontal <- function(hm_data, genes, cell_order) {
   
@@ -231,21 +218,11 @@ generate_zscore_heatmap_horizontal <- function(hm_data, genes, cell_order) {
 
 
 # ------------------------------------------------------------------------------
-# 3B. Vertical Z-Score Heatmap  (one narrow panel per gene, side-by-side)
-#     rows = cell types  |  columns = healed / not_healed
-#
-#     Uses annotated cell-type labels (Idents) and the biological order defined
-#     in CONFIG$cell_lineage_order.
-#
-#     Significance asterisks come from the pre-loaded DE table (FDR-based).
-#     Stars are displayed in the centre of the 'not_healed' tile for each
-#     (cell type, gene) pair to avoid duplication.
-#     Genes absent from the DE file receive no annotation.
+# 3B. Vertical Z-Score Heatmap
 # ------------------------------------------------------------------------------
 generate_zscore_heatmap_vertical <- function(hm_data, genes, cell_order,
                                              de_table) {
   
-  # Mean intra-cluster Z-score per (cell type x condition x gene)
   avg_std <- add_zscore(hm_data) %>%
     group_by(ident, condition, Gene) %>%
     summarise(Mean_Z = mean(Scaled_Expr, na.rm = TRUE), .groups = "drop") %>%
@@ -256,13 +233,10 @@ generate_zscore_heatmap_vertical <- function(hm_data, genes, cell_order,
     ) %>%
     filter(!is.na(ident))
   
-  # Pull significance stars from DE table for the genes in this pair.
-  # de_table uses uppercase gene names; match on (gene, cell_type).
   sig_lookup <- de_table %>%
     filter(gene %in% toupper(genes)) %>%
     select(Gene = gene, ident = cell_type, stars)
   
-  # Attach stars; default to "" for (gene, cell_type) pairs not in DE file
   avg_std <- avg_std %>%
     mutate(Gene_upper = toupper(as.character(Gene)),
            ident_chr  = as.character(ident)) %>%
@@ -271,27 +245,19 @@ generate_zscore_heatmap_vertical <- function(hm_data, genes, cell_order,
       by = c("Gene_upper", "ident_chr")
     ) %>%
     replace_na(list(stars = "")) %>%
-    mutate(
-      # Show asterisks only in the not_healed column to avoid duplication
-      label = ifelse(condition == "not_healed", stars, "")
-    ) %>%
+    mutate(label = ifelse(condition == "not_healed", stars, "")) %>%
     select(-Gene_upper, -ident_chr)
   
-  # Shared symmetric colour limit across both genes
-  lim <- max(abs(avg_std$Mean_Z), na.rm = TRUE)
-  
+  lim         <- max(abs(avg_std$Mean_Z), na.rm = TRUE)
   cond_labels <- c(healed = "Healed", not_healed = "Not Healed")
   
-  # Build one narrow panel per gene
   panels <- lapply(seq_along(genes), function(i) {
-    
     gene_name   <- genes[i]
     df_gene     <- avg_std %>% filter(Gene == gene_name)
     show_legend <- (i == length(genes))
     
     p <- ggplot(df_gene, aes(x = condition, y = ident, fill = Mean_Z)) +
       geom_tile(color = "white", linewidth = 0.6) +
-      # Significance asterisks centred in the not_healed tile
       geom_text(aes(label = label), size = 4.5, color = "black",
                 fontface = "bold", vjust = 0.5) +
       scale_fill_gradient2(
@@ -299,7 +265,6 @@ generate_zscore_heatmap_vertical <- function(hm_data, genes, cell_order,
         high = CONFIG$zscore_colors["high"], midpoint = 0,
         limits = c(-lim, lim), name = "Z-Score"
       ) +
-      # coord_fixed keeps tiles narrow (width = 0.5 x height)
       coord_fixed(ratio = 0.5) +
       scale_x_discrete(expand = c(0, 0), labels = cond_labels) +
       scale_y_discrete(expand = c(0, 0)) +
@@ -317,13 +282,10 @@ generate_zscore_heatmap_vertical <- function(hm_data, genes, cell_order,
         legend.text     = element_text(size = 10)
       )
     
-    # Suppress repeated y-axis labels from second panel onward
     if (i > 1) p <- p + theme(axis.text.y = element_blank())
-    
     p
   })
   
-  # Assemble with shared figure annotation
   wrap_plots(panels, nrow = 1) +
     plot_annotation(
       title    = paste(genes, collapse = " & "),
@@ -341,16 +303,10 @@ generate_zscore_heatmap_vertical <- function(hm_data, genes, cell_order,
 
 
 # ------------------------------------------------------------------------------
-# 3C. Custom DotPlot — CLUSTER-BASED  (one panel per gene, side-by-side)
-#
-#   rows  = Seurat clusters (numeric order, top to bottom)
-#   x     = condition  (healed | not_healed)
-#   Dot SIZE   = % cells expressing the gene, scaled per gene to [1, 8].
-#   Dot COLOUR = mean normalised expression (expressors only).
+# 3C. Custom DotPlot
 # ------------------------------------------------------------------------------
 generate_dotplot_custom <- function(hm_data_clusters, genes, cluster_order) {
   
-  # Aggregate % expressed and mean expression per (cluster x condition x gene)
   dot_data <- hm_data_clusters %>%
     group_by(cluster, condition, Gene) %>%
     summarise(
@@ -360,13 +316,11 @@ generate_dotplot_custom <- function(hm_data_clusters, genes, cluster_order) {
     ) %>%
     replace_na(list(Mean_Expr = 0)) %>%
     mutate(
-      # Use cluster_order for y-axis ordering (reversed so cluster 0 is at top)
       cluster   = factor(cluster,   levels = rev(cluster_order)),
       condition = factor(condition, levels = c("healed", "not_healed")),
       Gene      = factor(Gene,      levels = genes)
     )
   
-  # Per-gene min-max scaling of dot size to [1, 8].
   dot_data <- dot_data %>%
     group_by(Gene) %>%
     mutate(
@@ -380,9 +334,7 @@ generate_dotplot_custom <- function(hm_data_clusters, genes, cluster_order) {
   
   cond_labels <- c(healed = "Healed", not_healed = "Not Healed")
   
-  # Build one panel per gene
   panels <- lapply(seq_along(genes), function(i) {
-    
     gene_name   <- genes[i]
     df_gene     <- dot_data %>% filter(Gene == gene_name)
     show_legend <- (i == length(genes))
@@ -435,7 +387,7 @@ generate_dotplot_custom <- function(hm_data_clusters, genes, cluster_order) {
         legend.text        = element_text(size = 9)
       )
     
-    if (i > 1) p <- p + theme(axis.text.y = element_blank(),
+    if (i > 1) p <- p + theme(axis.text.y  = element_blank(),
                               axis.title.y = element_blank())
     p
   })
@@ -454,74 +406,46 @@ generate_dotplot_custom <- function(hm_data_clusters, genes, cluster_order) {
 
 
 # ------------------------------------------------------------------------------
-# 3D. Violin Plot — CELL-TYPE-BASED, BY CONDITION  (publication-ready)
+# 3D. Violin Plot — CELL-TYPE-BASED, BY CONDITION
 #
-#   Publication standards applied (Nature / Cell scRNA-seq style):
-#     - Single shared y-axis across all cell-type facets (scales = "fixed").
-#       coord_cartesian expands the upper limit to accommodate significance
-#       brackets without clipping, while the violin body fills the data range.
-#     - All significance brackets drawn at a SINGLE uniform y, so asterisks
-#       form a clean horizontal line across the figure.
-#     - Fully white background, zero grid lines.
-#     - Half-open axis frame (theme_classic): left + bottom lines only.
-#     - NO median line, NO boxplot — violin shape alone conveys the distribution.
-#     - Strip labels: plain italic text, NO background rectangle.
-#     - Condition colours: vivid, colourblind-safe pair.
-#     - Legend: horizontal, below the bottom gene panel only.
+# Y-AXIS STRATEGY — WINSORISATION (FIX v3):
+#
+#   Problem: geom_violin(trim=TRUE) estimates KDE on RAW expression values.
+#   In scRNA-seq, a small number of extreme outlier cells can push max(Expr)
+#   well above the 99th percentile.  The violin body therefore extends to the
+#   raw maximum, which can exceed coord_cartesian(ylim) → "overflow" artefact.
+#
+#   Solution — winsorise before plotting:
+#     Expression values are CAPPED at the per-gene 99th percentile before
+#     being passed to ggplot.  The KDE is estimated on capped data, so by
+#     construction the violin body never exceeds q99.
+#     The panel axis ceiling is set to exactly q99 (no padding required inside
+#     the panel).  Significance brackets are placed above q99 and rendered in
+#     the panel margin via coord_cartesian(clip = "off").
+#
+#   Three invariants guaranteed simultaneously:
+#     (a) Violin body never overflows axis top     → winsorised data + ylim=q99
+#     (b) No blank space above violin inside panel → ylim = q99 (exact ceiling)
+#     (c) Asterisks always visible                 → no limits= on scale_y_cont.;
+#                                                    brackets drawn with clip="off"
+#
+#   The subtitle discloses winsorisation to the reader (scientific transparency).
 # ------------------------------------------------------------------------------
 generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
                                                    de_table) {
   
-  # Condition palette — vivid, colourblind-distinguishable
   cond_colors <- c(healed     = "#2196F3",
                    not_healed = "#F44336")
   cond_labels <- c(healed = "Healed", not_healed = "Not Healed")
-  
-  # ------------------------------------------------------------------
-  # Helper: build significance annotation df for one gene.
-  #
-  # y_bracket is a SINGLE value computed from the GLOBAL 99th-pctile
-  # across ALL cell types × conditions, so every bracket sits at the
-  # same height regardless of per-cell-type expression range.
-  # y_ceiling is the upper limit passed to coord_cartesian: it adds
-  # comfortable room above the bracket text so nothing is clipped.
-  # ------------------------------------------------------------------
-  build_sig_df <- function(df_gene, gene_name) {
-    
-    # Hard maximum of the expression data — violin bodies will be capped here.
-    # Using max() ensures no violin tip ever crosses the axis line.
-    y_max    <- max(df_gene$Expression, na.rm = TRUE)
-    y99      <- quantile(df_gene$Expression, 0.99, na.rm = TRUE)
-    y_brk    <- y_max * 1.08 + 0.15   # bracket bar: just above the axis cap
-    y_txt    <- y_brk + 0.18          # asterisk text height
-    y_ceil   <- y_txt + 0.45          # coord_cartesian upper limit (bracket room)
-    
-    sig_rows <- de_table %>%
-      filter(gene == toupper(gene_name), stars != "") %>%
-      select(ident = cell_type, stars) %>%
-      mutate(ident = factor(ident, levels = cell_order)) %>%
-      filter(!is.na(ident))
-    
-    list(
-      sig_df  = if (nrow(sig_rows) == 0) {
-        data.frame()
-      } else {
-        sig_rows %>% mutate(
-          y_bracket = y_brk,
-          y_text    = y_txt,
-          x_lo      = 1, x_hi = 2, x_mid = 1.5
-        )
-      },
-      y_max  = y_max,
-      y_ceil = y_ceil
-    )
-  }
   
   panels <- lapply(seq_along(genes), function(i) {
     
     gene_name   <- genes[i]
     show_legend <- (i == length(genes))
     
+    # ------------------------------------------------------------------
+    # Step 1: extract & factor the data for this gene
+    # ------------------------------------------------------------------
     df_gene <- hm_data %>%
       filter(Gene == gene_name) %>%
       mutate(
@@ -530,15 +454,55 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
       ) %>%
       filter(!is.na(ident))
     
-    sig_out <- build_sig_df(df_gene, gene_name)
-    sig_df  <- sig_out$sig_df
-    y_max   <- sig_out$y_max
-    y_ceil  <- sig_out$y_ceil
+    # ------------------------------------------------------------------
+    # Step 2: compute the per-gene winsorisation ceiling (q99)
+    #   q99 is computed on ALL cells for this gene (all cell types &
+    #   conditions combined) so the shared fixed scale remains meaningful
+    #   and comparable across facets.
+    # ------------------------------------------------------------------
+    q99 <- quantile(df_gene$Expression, 0.99, na.rm = TRUE)
     
-    p <- ggplot(df_gene,
+    # Guard: if q99 == 0 (gene nearly silent), use max to avoid zero-range axis
+    if (q99 == 0) q99 <- max(df_gene$Expression, na.rm = TRUE)
+    if (q99 == 0) q99 <- 1   # absolute fallback for all-zero genes
+    
+    # ------------------------------------------------------------------
+    # Step 3: winsorise — cap Expression at q99
+    #   After capping, KDE from geom_violin(trim=TRUE) reaches exactly q99
+    #   at its upper tip, so the violin body cannot overflow ylim = q99.
+    # ------------------------------------------------------------------
+    df_plot <- df_gene %>%
+      mutate(Expression = pmin(Expression, q99))
+    
+    # ------------------------------------------------------------------
+    # Step 4: significance bracket positions
+    #   Brackets are placed ABOVE q99 (in the panel margin).
+    #   delta_brk and delta_txt scale with q99 for visual consistency.
+    # ------------------------------------------------------------------
+    delta_brk <- q99 * 0.09 + 0.07   # bracket bar above axis top
+    delta_txt <- q99 * 0.04 + 0.06   # asterisk above bracket bar
+    
+    y_brk <- q99 + delta_brk
+    y_txt <- y_brk + delta_txt
+    
+    sig_df <- de_table %>%
+      filter(gene == toupper(gene_name), stars != "") %>%
+      select(ident = cell_type, stars) %>%
+      mutate(ident = factor(ident, levels = cell_order)) %>%
+      filter(!is.na(ident)) %>%
+      mutate(
+        y_bracket = y_brk,
+        y_text    = y_txt,
+        x_lo  = 1L, x_hi = 2L, x_mid = 1.5
+      )
+    
+    # ------------------------------------------------------------------
+    # Step 5: build the plot
+    # ------------------------------------------------------------------
+    p <- ggplot(df_plot,
                 aes(x = condition, y = Expression, fill = condition)) +
       
-      # ---- Violin body ----
+      # ---- Violin body (KDE on winsorised data → never exceeds q99) ----
     geom_violin(
       trim      = TRUE,
       scale     = "width",
@@ -547,12 +511,11 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
       color     = "grey20"
     ) +
       
-      # ---- Significance bracket at uniform y across all facets ----
+      # ---- Significance brackets in panel margin (clip = "off") --------
     {
       if (nrow(sig_df) > 0) {
         list(
-          # Horizontal bar
-          geom_segment(
+          geom_segment(                          # horizontal bar
             data        = sig_df,
             aes(x = x_lo, xend = x_hi,
                 y = y_bracket, yend = y_bracket),
@@ -560,8 +523,7 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
             linewidth   = 0.50,
             color       = "grey10"
           ),
-          # Left drop tick
-          geom_segment(
+          geom_segment(                          # left tick
             data        = sig_df,
             aes(x = x_lo, xend = x_lo,
                 y = y_bracket - 0.06, yend = y_bracket),
@@ -569,8 +531,7 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
             linewidth   = 0.50,
             color       = "grey10"
           ),
-          # Right drop tick
-          geom_segment(
+          geom_segment(                          # right tick
             data        = sig_df,
             aes(x = x_hi, xend = x_hi,
                 y = y_bracket - 0.06, yend = y_bracket),
@@ -578,8 +539,7 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
             linewidth   = 0.50,
             color       = "grey10"
           ),
-          # Asterisk text
-          geom_text(
+          geom_text(                             # asterisk label
             data        = sig_df,
             aes(x = x_mid, y = y_text, label = stars),
             inherit.aes = FALSE,
@@ -592,15 +552,22 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
       }
     } +
       
-      # ---- Shared y-axis: hard cap at data max, expand only for brackets ----
-    # scale_y_continuous caps violin bodies at the true data maximum so no
-    # tip ever crosses the axis line.  coord_cartesian then silently extends
-    # the visible area upward to accommodate the significance brackets and
-    # asterisk text without clipping (clip = "off").
+      # ---- Facets: fixed scale across cell types for comparability -----
     facet_wrap(~ ident, nrow = 1, scales = "fixed") +
-      scale_y_continuous(limits = c(0, y_max),
-                         expand = expansion(mult = c(0, 0))) +
-      coord_cartesian(ylim = c(0, y_ceil), clip = "off") +
+      
+      # ---- Y-axis scale ------------------------------------------------
+    # No limits= here — scale_y_continuous with limits= would discard
+    # any geom positioned outside the range (the v1 bug).
+    # A small bottom expansion (2 %) prevents the violin base from
+    # touching the axis line.  No top expansion: axis ends at q99.
+    scale_y_continuous(expand = expansion(mult = c(0.02, 0))) +
+      
+      # coord_cartesian clips the visible panel at ylim = c(0, q99).
+      # Because the KDE was estimated on winsorised data (max = q99),
+      # the violin body fits exactly within this range — no overflow.
+      # clip = "off" renders the significance brackets above q99 in the
+      # panel margin without extending the axis.
+      coord_cartesian(ylim = c(0, q99), clip = "off") +
       
       scale_fill_manual(values = cond_colors, labels = cond_labels,
                         name   = "Condition",
@@ -609,7 +576,7 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
       
       labs(title = gene_name, x = NULL, y = "Normalised Expression") +
       
-      # ---- Publication theme ----
+      # ---- Publication theme -------------------------------------------
     theme_classic(base_size = 12) +
       theme(
         plot.title        = element_text(face = "bold.italic", size = 14,
@@ -649,8 +616,8 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
     plot_annotation(
       title    = paste(genes, collapse = " & "),
       subtitle = paste0(
-        "Normalised expression per annotated cell type  \u00b7  healed vs not_healed  ",
-        "\u00b7  * FDR<0.05  ** FDR<0.01  *** FDR<0.001"
+        "Normalised expression per annotated cell type  \u00b7  healed vs not_healed  \u00b7  ",
+        "values winsorised at 99th percentile  \u00b7  * FDR<0.05  ** FDR<0.01  *** FDR<0.001"
       ),
       theme = theme(
         plot.title      = element_text(face = "bold", size = 15, hjust = 0.5,
@@ -664,22 +631,10 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order,
 
 
 # ------------------------------------------------------------------------------
-# 3E. Violin Plot — ALL CELLS POOLED PER CELL TYPE  (publication-ready)
-#
-#   Layout:
-#     - One panel per gene, stacked vertically.
-#     - x     = annotated cell type (ordered as CONFIG$cell_lineage_order).
-#     - y     = normalised expression (all conditions combined).
-#     - Colour = saturated rainbow palette, one hue per cell type.
-#               Generated via hcl.colors(n, "Spectral") for perceptual
-#               uniformity — vivid, distinct, publication-safe.
-#     - NO boxplot overlay; NO grid lines; NO median line or text label.
-#     - Half-open axis frame (theme_classic).
-#     - Cell-type names on x-axis, rotated 40°, face "bold.italic".
+# 3E. Violin Plot — ALL CELLS POOLED PER CELL TYPE
 # ------------------------------------------------------------------------------
 generate_violinplot_allcells <- function(hm_data, genes, cell_order) {
   
-  # Saturated rainbow palette — perceptually uniform via HCL Spectral
   n_ct       <- length(cell_order)
   ct_palette <- setNames(
     hcl.colors(n_ct, palette = "Spectral", rev = FALSE),
@@ -687,7 +642,6 @@ generate_violinplot_allcells <- function(hm_data, genes, cell_order) {
   )
   
   panels <- lapply(seq_along(genes), function(i) {
-    
     gene_name <- genes[i]
     
     df_gene <- hm_data %>%
@@ -696,24 +650,18 @@ generate_violinplot_allcells <- function(hm_data, genes, cell_order) {
       filter(!is.na(ident))
     
     ggplot(df_gene, aes(x = ident, y = Expression, fill = ident)) +
-      
-      # ---- Violin body ----
-    geom_violin(
-      trim      = TRUE,
-      scale     = "width",
-      alpha     = 1.00,
-      linewidth = 0.40,
-      color     = "grey20"
-    ) +
-      
+      geom_violin(
+        trim      = TRUE,
+        scale     = "width",
+        alpha     = 1.00,
+        linewidth = 0.40,
+        color     = "grey20"
+      ) +
       scale_fill_manual(values  = ct_palette, guide = "none") +
       scale_color_manual(values = ct_palette, guide = "none") +
       scale_x_discrete(expand = expansion(add = 0.60)) +
-      
       labs(title = gene_name, x = NULL, y = "Normalised Expression") +
-      
-      # ---- Publication theme ----
-    theme_classic(base_size = 12) +
+      theme_classic(base_size = 12) +
       theme(
         plot.title        = element_text(face = "bold.italic", size = 14,
                                          hjust = 0.5, margin = margin(b = 5)),
@@ -751,11 +699,6 @@ generate_violinplot_allcells <- function(hm_data, genes, cell_order) {
 
 # ==============================================================================
 # 4. PER-PAIR PIPELINE
-#    Orchestrates data fetching and all five plot calls for one gene pair.
-#
-#    Two FetchData calls are performed:
-#      - hm_df:      uses annotated cell-type Idents → heatmaps + violins
-#      - cluster_df: uses RNA_snn_res.0.7 clusters  → dotplot only
 # ==============================================================================
 run_pair_pipeline <- function(seurat_obj, genes, cell_order, cluster_order,
                               output_dir, de_table) {
@@ -763,7 +706,6 @@ run_pair_pipeline <- function(seurat_obj, genes, cell_order, cluster_order,
   tag <- genes_to_tag(genes)
   message("\n=== Gene pair: ", paste(genes, collapse = " & "), " ===")
   
-  # Validate gene names against the Seurat feature space
   valid_genes <- intersect(genes, rownames(seurat_obj))
   missing     <- setdiff(genes, valid_genes)
   if (length(missing) > 0)
@@ -774,16 +716,13 @@ run_pair_pipeline <- function(seurat_obj, genes, cell_order, cluster_order,
     return(invisible(NULL))
   }
   
-  # Warn if some genes are absent from the DE table
   de_genes   <- unique(toupper(de_table$gene))
   missing_de <- setdiff(toupper(valid_genes), de_genes)
   if (length(missing_de) > 0)
     message("  Note: gene(s) not found in DE file (no asterisks): ",
             paste(missing_de, collapse = ", "))
   
-  # --------------------------------------------------------------------------
-  # Fetch 1: cell-type annotated identity → heatmaps + violin plots
-  # --------------------------------------------------------------------------
+  # Fetch 1: annotated cell-type identity → heatmaps + violin plots
   message("  Fetching expression data (annotated cell types)...")
   raw_hm <- FetchData(seurat_obj,
                       vars  = c(valid_genes, "ident", "condition"),
@@ -794,9 +733,7 @@ run_pair_pipeline <- function(seurat_obj, genes, cell_order, cluster_order,
                  names_to  = "Gene",
                  values_to = "Expression")
   
-  # --------------------------------------------------------------------------
-  # Fetch 2: cluster identity (RNA_snn_res.0.7) → dotplot
-  # --------------------------------------------------------------------------
+  # Fetch 2: cluster identity → dotplot
   message("  Fetching expression data (Seurat clusters — for dotplot)...")
   raw_cl <- FetchData(seurat_obj,
                       vars  = c(valid_genes, "RNA_snn_res.0.7", "condition"),
@@ -809,58 +746,42 @@ run_pair_pipeline <- function(seurat_obj, genes, cell_order, cluster_order,
                  names_to  = "Gene",
                  values_to = "Expression")
   
-  # ---- Plot 1: Horizontal Z-Score Heatmap (cell types) ---------------------
+  # Plot 1
   message("  Saving horizontal Z-Score heatmap...")
   p1 <- generate_zscore_heatmap_horizontal(hm_df, valid_genes, cell_order)
-  ggsave(
-    filename = file.path(output_dir, paste0(tag, "_ZScore_Heatmap_Horizontal.pdf")),
-    plot = p1, width = CONFIG$heatmap_h_width, height = CONFIG$heatmap_h_height,
-    dpi = 300
-  )
+  ggsave(file.path(output_dir, paste0(tag, "_ZScore_Heatmap_Horizontal.pdf")),
+         p1, width = CONFIG$heatmap_h_width, height = CONFIG$heatmap_h_height,
+         dpi = 300)
   
-  # ---- Plot 2: Vertical Z-Score Heatmap (cell types, with FDR asterisks) --
+  # Plot 2
   message("  Saving vertical Z-Score heatmap...")
   p2 <- generate_zscore_heatmap_vertical(hm_df, valid_genes, cell_order,
                                          de_table)
-  ggsave(
-    filename = file.path(output_dir, paste0(tag, "_ZScore_Heatmap_Vertical.pdf")),
-    plot = p2, width = CONFIG$heatmap_v_width, height = CONFIG$heatmap_v_height,
-    dpi = 300
-  )
+  ggsave(file.path(output_dir, paste0(tag, "_ZScore_Heatmap_Vertical.pdf")),
+         p2, width = CONFIG$heatmap_v_width, height = CONFIG$heatmap_v_height,
+         dpi = 300)
   
-  # ---- Plot 3: Custom DotPlot (clusters) -----------------------------------
+  # Plot 3
   message("  Saving cluster-based DotPlot...")
   p3 <- generate_dotplot_custom(cluster_df, valid_genes, cluster_order)
-  ggsave(
-    filename = file.path(output_dir, paste0(tag, "_DotPlot.pdf")),
-    plot = p3, width = CONFIG$dotplot_width, height = CONFIG$dotplot_height,
-    dpi = 300
-  )
+  ggsave(file.path(output_dir, paste0(tag, "_DotPlot.pdf")),
+         p3, width = CONFIG$dotplot_width, height = CONFIG$dotplot_height,
+         dpi = 300)
   
-  # ---- Plot 4: Violin by condition (cell types, FDR asterisks) -------------
+  # Plot 4
   message("  Saving cell-type violin plot (healed vs not_healed)...")
   p4 <- generate_violinplot_celltype_condition(hm_df, valid_genes,
                                                cell_order, de_table)
-  ggsave(
-    filename = file.path(output_dir,
-                         paste0(tag, "_ViolinPlot_ByCondition.pdf")),
-    plot   = p4,
-    width  = CONFIG$violinplot_cond_width,
-    height = CONFIG$violinplot_cond_height,
-    dpi    = 300
-  )
+  ggsave(file.path(output_dir, paste0(tag, "_ViolinPlot_ByCondition.pdf")),
+         p4, width  = CONFIG$violinplot_cond_width,
+         height = CONFIG$violinplot_cond_height, dpi = 300)
   
-  # ---- Plot 5: Violin all cells pooled per cell type -----------------------
+  # Plot 5
   message("  Saving pooled violin plot (all cells per cell type)...")
   p5 <- generate_violinplot_allcells(hm_df, valid_genes, cell_order)
-  ggsave(
-    filename = file.path(output_dir,
-                         paste0(tag, "_ViolinPlot_AllCells.pdf")),
-    plot   = p5,
-    width  = CONFIG$violinplot_all_width,
-    height = CONFIG$violinplot_all_height,
-    dpi    = 300
-  )
+  ggsave(file.path(output_dir, paste0(tag, "_ViolinPlot_AllCells.pdf")),
+         p5, width  = CONFIG$violinplot_all_width,
+         height = CONFIG$violinplot_all_height, dpi = 300)
   
   message("  Done — 5 PDFs saved  [prefix: ", tag, "]")
   return(invisible(NULL))
@@ -876,30 +797,23 @@ tryCatch({
   if (!dir.exists(CONFIG$output_dir))
     dir.create(CONFIG$output_dir, recursive = TRUE)
   
-  # ---- Load and validate the DE significance table -------------------------
   message("Loading DE results table...")
   de_table <- load_de_table(CONFIG$input_de)
-  message("  DE table loaded: ", nrow(de_table), " unique (gene, cell_type) entries.")
+  message("  DE table loaded: ", nrow(de_table),
+          " unique (gene, cell_type) entries.")
   
-  # ---- Load Seurat object --------------------------------------------------
-  # Uncomment the line below to load the Seurat object from disk:
+  # Uncomment to load Seurat object:
   # seurat_obj <- readRDS(CONFIG$input_seurat)
   
-  # ---- Sanitise cell-type metadata (used by heatmaps and violins) ----------
   message("Sanitising Seurat cell-type metadata...")
-  
-  # Normalise condition strings to lowercase
   seurat_obj$condition <- tolower(trimws(seurat_obj$condition))
   
-  # Strip numeric cluster prefix from cell-type labels if present
-  # (e.g. "3. NK cells" -> "NK cells")
-  clean_idents <- str_remove_all(as.character(Idents(seurat_obj)), "^\\d+\\.\\s*")
-  Idents(seurat_obj) <- factor(clean_idents, levels = CONFIG$cell_lineage_order)
+  clean_idents <- str_remove_all(as.character(Idents(seurat_obj)),
+                                 "^\\d+\\.\\s*")
+  Idents(seurat_obj) <- factor(clean_idents,
+                               levels = CONFIG$cell_lineage_order)
+  seurat_obj$ident   <- Idents(seurat_obj)
   
-  # Mirror active identity into metadata for FetchData compatibility
-  seurat_obj$ident <- Idents(seurat_obj)
-  
-  # ---- Build cluster order from RNA_snn_res.0.7 ----------------------------
   cluster_order <- sort(
     unique(as.numeric(as.character(seurat_obj$RNA_snn_res.0.7)))
   )
@@ -907,7 +821,6 @@ tryCatch({
   message("  Clusters detected (", length(cluster_order), " total): ",
           paste(cluster_order, collapse = ", "))
   
-  # ---- Iterate over gene pairs ---------------------------------------------
   for (pair in CONFIG$gene_pairs) {
     run_pair_pipeline(
       seurat_obj    = seurat_obj,

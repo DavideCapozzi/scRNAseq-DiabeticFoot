@@ -483,7 +483,7 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order, d
       scale_y_sqrt(expand = expansion(mult = c(0.01, 0.25))) +
       scale_fill_manual(values = cond_colors, labels = cond_labels, name = "Condition", guide = if (show_legend) "legend" else "none") +
       scale_x_discrete(labels = cond_labels) +
-      labs(title = gene_name, x = NULL, y = "Normalised Expression (Sqrt Scale)") +
+      labs(title = gene_name, x = NULL, y = "Normalised Expression") +
       theme_classic(base_size = 12) +
       theme(
         plot.title        = element_text(face = "bold.italic", size = 14, hjust = 0.5, margin = margin(b = 6)),
@@ -507,7 +507,7 @@ generate_violinplot_celltype_condition <- function(hm_data, genes, cell_order, d
     plot_annotation(
       title    = paste(genes, collapse = " & "),
       subtitle = paste0(
-        "Normalised expression (Sqrt Scale)  \u00b7  healed vs not_healed (free Y-scales)  \u00b7  ",
+        "Normalised expression  \u00b7  healed vs not_healed (free Y-scales)  \u00b7  ",
         "KDE smoothed (adjust=1.5) for sparsity  \u00b7  * FDR<0.05  ** FDR<0.01  *** FDR<0.001"
       ),
       theme = theme(
@@ -540,7 +540,7 @@ generate_violinplot_allcells <- function(hm_data, genes, cell_order) {
       scale_fill_manual(values  = ct_palette, guide = "none") +
       scale_color_manual(values = ct_palette, guide = "none") +
       scale_x_discrete(expand = expansion(add = 0.60)) +
-      labs(title = gene_name, x = NULL, y = "Normalised Expression (Sqrt Scale)") +
+      labs(title = gene_name, x = NULL, y = "Normalised Expression") +
       theme_classic(base_size = 12) +
       theme(
         plot.title        = element_text(face = "bold.italic", size = 14, hjust = 0.5, margin = margin(b = 5)),
@@ -555,7 +555,7 @@ generate_violinplot_allcells <- function(hm_data, genes, cell_order) {
   wrap_plots(panels, ncol = 1) +
     plot_annotation(
       title    = paste(genes, collapse = " & "),
-      subtitle = "Normalised expression per annotated cell type  \u00b7  Y-axis is Square Root transformed to enhance low-expression visibility",
+      subtitle = "Normalised expression per annotated cell type",
       theme    = theme(
         plot.title      = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b = 3)),
         plot.subtitle   = element_text(size = 9, hjust = 0.5, color = "grey45", margin = margin(b = 8)),

@@ -11,11 +11,8 @@ library(patchwork)
 library(dplyr)
 library(ggrepel)
 
-seurat_file <- "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/5_annotation/manual_annotation_res/seurat_res_0.7_with_celltypeID.rds"
-seurat_obj <- readRDS(seurat_file)
-
 # ── output dir ───────────────────────────────────────────────
-out_dir <- "G:/Drive condivisi/sc-FEDE_DAVIDE/01_second_new_analysis/scRNAseq-DiabeticFoot/4_normalization_and_clustering/PC_diagnostics/"
+out_dir <- "./PC_diagnostics"
 dir.create(out_dir, showWarnings = FALSE)
 
 # ── costanti ─────────────────────────────────────────────────
@@ -233,63 +230,174 @@ save_plot(p_umap_sensitivity, "05_umap_sensitivity.png", w = 18, h = 6)
 
 
 # ============================================================
-#  6. CLUSTER STABILITY TABLE — quante cellule cambiano cluster
-#     tra risoluzione calcolata con 6 vs 10 PC?
+#  6. ARI/NMI CLUSTER STABILITY — label-permutation-invariant
+#     Computes ARI and NMI between clustering at PC6 (reference)
+#     and clusterings at PC10, PC15, PC20.
+#     ARI = 1 → identical structure; ARI ~ 0 → random agreement
+#     Unlike raw concordance, ARI is invariant to cluster renumbering.
 # ============================================================
-message("[6/6] Cluster stability: concordanza 6 vs 10 PC...")
+message("[6/6] ARI/NMI cluster stability across PC cutoffs...")
 
-tmp10 <- FindNeighbors(seurat_obj, dims = 1:10, verbose = FALSE)
-tmp10 <- FindClusters(tmp10, resolution = 0.7, verbose = FALSE,
-                      cluster.name = "clusters_10pc")
+# bluster::pairwiseRand requires Bioconductor; use fossil::adj.rand.index
+# as lightweight alternative, falling back to manual computation if needed.
+ari_manual <- function(a, b) {
+  # Computes ARI from two factor/character vectors via contingency table.
+  # Hubert & Arabie (1985) formulation.
+  a <- as.integer(factor(a))
+  b <- as.integer(factor(b))
+  tab <- table(a, b)
+  n   <- sum(tab)
+  sa  <- sum(choose(rowSums(tab), 2))
+  sb  <- sum(choose(colSums(tab), 2))
+  sc  <- sum(choose(tab, 2))
+  expected <- sa * sb / choose(n, 2)
+  denom    <- 0.5 * (sa + sb) - expected
+  if (denom == 0) return(1.0)
+  (sc - expected) / denom
+}
 
-df_comp <- data.frame(
-  clusters_6pc  = as.character(seurat_obj$seurat_clusters),
-  clusters_10pc = as.character(tmp10$clusters_10pc)
-)
+nmi_manual <- function(a, b) {
+  # Normalized Mutual Information (arithmetic mean normalisation).
+  a  <- as.integer(factor(a))
+  b  <- as.integer(factor(b))
+  n  <- length(a)
+  tab <- table(a, b) / n
+  pa  <- rowSums(tab)
+  pb  <- colSums(tab)
+  # mutual information
+  mi <- 0
+  for (i in seq_len(nrow(tab))) {
+    for (j in seq_len(ncol(tab))) {
+      pij <- tab[i, j]
+      if (pij > 0) mi <- mi + pij * log(pij / (pa[i] * pb[j]))
+    }
+  }
+  ha <- -sum(pa[pa > 0] * log(pa[pa > 0]))
+  hb <- -sum(pb[pb > 0] * log(pb[pb > 0]))
+  denom <- 0.5 * (ha + hb)
+  if (denom == 0) return(1.0)
+  mi / denom
+}
 
-# % concordanza globale
-concordance <- mean(df_comp$clusters_6pc == df_comp$clusters_10pc)
+ref_labels <- as.character(seurat_obj$seurat_clusters)
+pc_targets  <- c(10, 15, 20)
+stability_results <- list()
 
-# contingency heatmap
-cont_mat <- df_comp |>
-  count(clusters_6pc, clusters_10pc) |>
-  group_by(clusters_6pc) |>
-  mutate(pct = n / sum(n) * 100) |>
-  ungroup()
+for (nd in pc_targets) {
+  message(sprintf("  Computing ARI/NMI for dims = 1:%d vs 1:%d ...", N_PCS_USED, nd))
+  tmp <- FindNeighbors(seurat_obj, dims = 1:nd, verbose = FALSE)
+  tmp <- FindClusters(tmp, resolution = 0.7, verbose = FALSE,
+                      cluster.name = "clusters_tmp",
+                      graph.name   = "RNA_snn")
+  cmp_labels <- as.character(tmp$clusters_tmp)
+  
+  ari_val <- ari_manual(ref_labels, cmp_labels)
+  nmi_val <- nmi_manual(ref_labels, cmp_labels)
+  
+  # contingency matrix (row-normalised) for heatmap tile
+  cont <- data.frame(ref = ref_labels, cmp = cmp_labels) |>
+    count(ref, cmp) |>
+    group_by(ref) |>
+    mutate(pct = n / sum(n) * 100) |>
+    ungroup() |>
+    mutate(pc_comparison = sprintf("PC%d vs PC%d", N_PCS_USED, nd),
+           ari = ari_val, nmi = nmi_val)
+  
+  stability_results[[as.character(nd)]] <- cont
+  rm(tmp); gc()
+}
 
-p_stability <- ggplot(cont_mat,
-                      aes(x = clusters_10pc, y = clusters_6pc, fill = pct)) +
-  geom_tile(color = "white", linewidth = 0.4) +
-  geom_text(aes(label = ifelse(pct > 2, sprintf("%.0f%%", pct), "")),
-            size = 2.8, color = "white") +
-  scale_fill_gradient(low = "white", high = "#08306b",
-                      name = "% cells\n(row-norm.)") +
+df_stability <- bind_rows(stability_results)
+
+# ── 6a: ARI / NMI summary bar plot ──────────────────────────
+df_metrics <- df_stability |>
+  distinct(pc_comparison, ari, nmi) |>
+  tidyr::pivot_longer(cols = c(ari, nmi),
+                      names_to  = "metric",
+                      values_to = "value") |>
+  mutate(metric = toupper(metric),
+         label  = sprintf("%.3f", value))
+
+p_ari <- ggplot(df_metrics, aes(x = pc_comparison, y = value, fill = metric)) +
+  geom_col(position = position_dodge(0.7), width = 0.6) +
+  geom_text(aes(label = label),
+            position = position_dodge(0.7),
+            vjust = -0.4, size = 3.5) +
+  geom_hline(yintercept = c(0.6, 0.8),
+             linetype = c("dashed", "dotted"),
+             color    = c("#e07b00", "#2171b5"),
+             linewidth = 0.7) +
+  annotate("text", x = 0.55, y = 0.62,
+           label = "ARI = 0.6\n(moderate)", color = "#e07b00",
+           size = 3, hjust = 0) +
+  annotate("text", x = 0.55, y = 0.82,
+           label = "ARI = 0.8\n(strong)", color = "#2171b5",
+           size = 3, hjust = 0) +
+  scale_fill_manual(values = c("ARI" = "#2171b5", "NMI" = "#cb181d"),
+                    name = NULL) +
+  scale_y_continuous(limits = c(0, 1.05),
+                     expand = expansion(mult = c(0, 0.05))) +
   labs(
-    title    = "Cluster concordance: 6 PC vs 10 PC",
-    subtitle = sprintf("Global concordance = %.1f%%  |  Resolution = 0.7 in entrambi i casi",
-                       concordance * 100),
-    x = "Clusters (dims = 1:10)",
-    y = "Clusters (dims = 1:6)"
+    title    = "Cluster stability: ARI and NMI (label-permutation invariant)",
+    subtitle = sprintf("Reference: clustering at dims = 1:%d  |  Resolution = 0.7", N_PCS_USED),
+    x = NULL, y = "Score (0 = random, 1 = identical)"
   ) +
-  theme_classic(base_size = 12) +
-  theme(axis.text = element_text(size = 9))
+  theme_classic(base_size = 13) +
+  theme(legend.position = "top")
 
-save_plot(p_stability, "06_cluster_stability_6vs10PC.png", w = 11, h = 9)
+save_plot(p_ari, "06a_ARI_NMI_summary.png", w = 9, h = 6)
 
-rm(tmp10); gc()
+# ── 6b: contingency heatmaps per ogni confronto ─────────────
+heatmap_list <- lapply(pc_targets, function(nd) {
+  sub <- df_stability |>
+    filter(pc_comparison == sprintf("PC%d vs PC%d", N_PCS_USED, nd))
+  ari_val <- unique(sub$ari)
+  nmi_val <- unique(sub$nmi)
+  
+  ggplot(sub, aes(x = cmp, y = ref, fill = pct)) +
+    geom_tile(color = "white", linewidth = 0.3) +
+    geom_text(aes(label = ifelse(pct > 3, sprintf("%.0f%%", pct), "")),
+              size = 2.5, color = "white") +
+    scale_fill_gradient(low = "white", high = "#08306b",
+                        name = "% cells\n(row)", limits = c(0, 100)) +
+    labs(
+      title    = sprintf("PC%d vs PC%d", N_PCS_USED, nd),
+      subtitle = sprintf("ARI = %.3f  |  NMI = %.3f", ari_val, nmi_val),
+      x = sprintf("Clusters (dims = 1:%d)", nd),
+      y = sprintf("Clusters (dims = 1:%d)", N_PCS_USED)
+    ) +
+    theme_classic(base_size = 10) +
+    theme(axis.text      = element_text(size = 7),
+          legend.position = "right")
+})
+
+p_heatmaps <- wrap_plots(heatmap_list, ncol = 3) +
+  plot_annotation(
+    title = "Contingency heatmaps: reference clustering (6 PC) vs increasing PC cutoffs",
+    theme = theme(plot.title = element_text(size = 13, face = "bold"))
+  )
+
+save_plot(p_heatmaps, "06b_contingency_heatmaps.png", w = 20, h = 8)
 
 
 # ============================================================
-#  SUMMARY REPORT — stampa a console
+#  SUMMARY REPORT
 # ============================================================
+ari_10 <- df_stability |> filter(pc_comparison == "PC6 vs PC10") |>
+  pull(ari) |> unique()
+ari_15 <- df_stability |> filter(pc_comparison == "PC6 vs PC15") |>
+  pull(ari) |> unique()
+ari_20 <- df_stability |> filter(pc_comparison == "PC6 vs PC20") |>
+  pull(ari) |> unique()
+
 cat("\n")
 cat("══════════════════════════════════════════════\n")
 cat("  PC DIAGNOSTICS — SUMMARY\n")
 cat("══════════════════════════════════════════════\n")
-cat(sprintf("  Cells           : %d\n", ncol(seurat_obj)))
-cat(sprintf("  Genes           : %d\n", nrow(seurat_obj)))
+cat(sprintf("  Cells            : %d\n", ncol(seurat_obj)))
+cat(sprintf("  Genes            : %d\n", nrow(seurat_obj)))
 cat(sprintf("  Variable features: %d\n", length(VariableFeatures(seurat_obj))))
-cat(sprintf("  PCs computed    : %d\n", N_PCS_TOTAL))
+cat(sprintf("  PCs computed     : %d\n", N_PCS_TOTAL))
 cat("----------------------------------------------\n")
 cat(sprintf("  Variance @ PC6  : %.2f%%\n", cum_var[6]))
 cat(sprintf("  Variance @ PC10 : %.2f%%\n", cum_var[10]))
@@ -297,6 +405,12 @@ cat(sprintf("  Variance @ PC15 : %.2f%%\n", cum_var[15]))
 cat(sprintf("  Variance @ PC20 : %.2f%%\n", cum_var[20]))
 cat(sprintf("  Variance @ PC50 : %.2f%%\n", cum_var[50]))
 cat("----------------------------------------------\n")
-cat(sprintf("  Cluster concordance 6 vs 10 PC: %.1f%%\n", concordance * 100))
+cat("  Cluster stability (ARI, label-invariant):\n")
+cat(sprintf("    PC6 vs PC10 : ARI = %.3f\n", ari_10))
+cat(sprintf("    PC6 vs PC15 : ARI = %.3f\n", ari_15))
+cat(sprintf("    PC6 vs PC20 : ARI = %.3f\n", ari_20))
+cat("  Interpretation: ARI > 0.8 = strong stability\n")
+cat("                  ARI 0.6-0.8 = moderate\n")
+cat("                  ARI < 0.6 = substantial restructuring\n")
 cat("══════════════════════════════════════════════\n")
-cat("  Output salvato in:", normalizePath(out_dir), "\n\n")
+cat("  Output saved in:", normalizePath(out_dir), "\n\n")

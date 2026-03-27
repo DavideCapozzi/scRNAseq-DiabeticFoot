@@ -16,9 +16,10 @@ out_dir <- "./PC_diagnostics"
 dir.create(out_dir, showWarnings = FALSE)
 
 # ── costanti ─────────────────────────────────────────────────
-N_PCS_USED  <- 6          # quello attuale
-N_PCS_TOTAL <- 50         # npcs usati in RunPCA
-CUTOFFS     <- c(6, 10, 15, 20)   # cutoff da confrontare nei plot
+N_PCS_USED  <- 6                  # quello attuale
+N_PCS_TOTAL <- 50                 # npcs usati in RunPCA
+CUTOFFS     <- c(6, 10, 20)       # cutoff da confrontare nei plot [MODIFICATO: rimosso 15]
+RES_VALUES  <- c(0.4, 0.5, 0.7)  # resolution per i plot UMAP [AGGIUNTO]
 
 
 # ============================================================
@@ -53,6 +54,10 @@ df_var <- data.frame(
 # calcola il "delta" tra PC consecutive (utile per vedere il gomito)
 df_var$delta <- c(NA, -diff(var_exp))
 
+# Palette e linetype per 3 cutoff: 6, 10, 20 [MODIFICATO: da 4 a 3 elementi]
+cutoff_colors    <- c("firebrick", "#e07b00", "#1a7abd")
+cutoff_linetypes <- c("dashed", "dotted", "dotdash")
+
 p_elbow <- ggplot(df_var, aes(x = PC, y = var_exp, fill = used)) +
   geom_col(width = 0.8, show.legend = FALSE) +
   geom_text(aes(label = ifelse(PC <= 20, sprintf("%.1f", var_exp), "")),
@@ -63,10 +68,10 @@ p_elbow <- ggplot(df_var, aes(x = PC, y = var_exp, fill = used)) +
             data = df_var) +
   geom_point(aes(x = PC, y = cum_var / 4), color = "grey40",
              size = 1.2, inherit.aes = FALSE, data = df_var) +
-  # marcatori per i cutoff candidati
+  # marcatori per i cutoff candidati [MODIFICATO: 3 cutoff, 3 colori/linetype]
   geom_vline(xintercept = CUTOFFS + 0.5,
-             linetype   = c("dashed", "dotted", "dotdash", "longdash"),
-             color      = c("firebrick","#e07b00","#1a7abd","#4caf50"),
+             linetype   = cutoff_linetypes,
+             color      = cutoff_colors,
              linewidth  = 0.8) +
   annotate("text",
            x     = CUTOFFS + 0.6,
@@ -74,7 +79,7 @@ p_elbow <- ggplot(df_var, aes(x = PC, y = var_exp, fill = used)) +
            label = paste0("PC", CUTOFFS,
                           "\n", sprintf("%.1f%%", cum_var[CUTOFFS])),
            hjust = 0, size = 3,
-           color = c("firebrick","#e07b00","#1a7abd","#4caf50")) +
+           color = cutoff_colors) +
   scale_fill_manual(values = c("TRUE" = "#2171b5", "FALSE" = "#bdd7e7")) +
   scale_x_continuous(breaks = c(1, CUTOFFS, seq(10, N_PCS_TOTAL, 10)) |> unique() |> sort()) +
   scale_y_continuous(
@@ -84,6 +89,7 @@ p_elbow <- ggplot(df_var, aes(x = PC, y = var_exp, fill = used)) +
   ) +
   labs(
     title    = "PCA — Variance explained per PC",
+    # Subtitle aggiornato: solo PC6, PC10, PC20 [MODIFICATO]
     subtitle = sprintf("PC1–6 = %.1f%%  |  PC1–10 = %.1f%%  |  PC1–20 = %.1f%%  |  All 50 PCs = %.1f%%",
                        cum_var[6], cum_var[10], cum_var[20], cum_var[50]),
     x = "Principal Component"
@@ -121,23 +127,24 @@ save_plot(p_delta, "02_delta_variance.png", w = 13, h = 5)
 
 
 # ============================================================
-#  3. HEATMAP TOP FEATURE LOADINGS — PC1:15
-#     Mostra se le PC tardive (7-15) hanno ancora struttura biologica
+#  3. HEATMAP TOP FEATURE LOADINGS — PC1:20
+#     Mostra se le PC tardive (7-20) hanno ancora struttura biologica
 #     o sono rumore
+#     [MODIFICATO: esteso da PC1:15 a PC1:20 per coerenza con i nuovi cutoff]
 # ============================================================
-message("[3/6] Heatmap feature loadings PC1-15...")
+message("[3/6] Heatmap feature loadings PC1-20...")
 
 # DimHeatmap è la funzione nativa Seurat per questo scopo
 # Salviamo come PNG aprendo device manualmente (DimHeatmap non è ggplot)
-png(file.path(out_dir, "03_dimheatmap_PC1-15.png"),
-    width = 2400, height = 3200, res = 200)
+png(file.path(out_dir, "03_dimheatmap_PC1-20.png"),  # [MODIFICATO: filename]
+    width = 2400, height = 4000, res = 200)            # [MODIFICATO: h aumentata per 20 PC]
 DimHeatmap(seurat_obj,
-           dims       = 1:15,
+           dims       = 1:20,   # [MODIFICATO: da 1:15 a 1:20]
            cells      = 500,    # subsample per velocità
            balanced   = TRUE,
            fast       = FALSE)
 dev.off()
-message("  → salvato: 03_dimheatmap_PC1-15.png")
+message("  → salvato: 03_dimheatmap_PC1-20.png")
 
 
 # ============================================================
@@ -186,57 +193,80 @@ save_plot(p_loadings, "04_gene_loadings_PC1-10.png", w = 12, h = 14)
 
 
 # ============================================================
-#  5. UMAP SENSITIVITY — confronto UMAP con dims 6 / 10 / 15
+#  5. UMAP SENSITIVITY — confronto UMAP con dims 1:6 / 1:10 / 1:20
+#     per ciascuna resolution in c(0.4, 0.5, 0.7)
 #     colorato per seurat_clusters attuali
 #     NOTA: ricalcola FindNeighbors + RunUMAP in locale,
 #           NON sovrascrive l'oggetto originale
+#
+#  [MODIFICATO]:
+#    - PC confrontati: c(6, 10, 20)  (rimosso 15)
+#    - Aggiunto loop su resolution: c(0.4, 0.5, 0.7)
+#    - Per ogni resolution: griglia 3 UMAP (una per PC cutoff)
+#    - Output: un file PNG per resolution → 3 file totali
 # ============================================================
-message("[5/6] UMAP sensitivity analysis (6 / 10 / 15 PCs)...")
+message("[5/6] UMAP sensitivity analysis (6 / 10 / 20 PCs  ×  res 0.4 / 0.5 / 0.7)...")
 
-umap_plots <- list()
+pc_dims <- c(6, 10, 20)  # [MODIFICATO: da c(6, 10, 15) a c(6, 10, 20)]
 
-for (nd in c(6, 10, 15)) {
-  tmp <- FindNeighbors(seurat_obj, dims = 1:nd, verbose = FALSE)
-  tmp <- RunUMAP(tmp, dims = 1:nd, verbose = FALSE,
-                 reduction.name = "umap_tmp",
-                 reduction.key  = "umaptmp_")
+for (res in RES_VALUES) {
   
-  df_umap <- as.data.frame(tmp@reductions$umap_tmp@cell.embeddings)
-  df_umap$cluster <- seurat_obj$seurat_clusters
+  message(sprintf("  Resolution = %.1f", res))
+  umap_plots <- list()
   
-  umap_plots[[as.character(nd)]] <- ggplot(df_umap,
-                                           aes(x = umaptmp_1, y = umaptmp_2, color = cluster)) +
-    geom_point(size = 0.05, alpha = 0.3) +
-    guides(color = guide_legend(override.aes = list(size = 3, alpha = 1))) +
-    labs(title   = sprintf("UMAP  —  dims = 1:%d", nd),
-         subtitle = sprintf("Cumulative variance = %.1f%%", cum_var[nd]),
-         x = "UMAP 1", y = "UMAP 2") +
-    theme_classic(base_size = 11) +
-    theme(legend.text  = element_text(size = 7),
-          legend.title = element_blank())
+  for (nd in pc_dims) {
+    tmp <- FindNeighbors(seurat_obj, dims = 1:nd, verbose = FALSE)
+    tmp <- FindClusters(tmp, resolution = res, verbose = FALSE,
+                        graph.name = "RNA_snn")
+    tmp <- RunUMAP(tmp, dims = 1:nd, verbose = FALSE,
+                   reduction.name = "umap_tmp",
+                   reduction.key  = "umaptmp_")
+    
+    df_umap           <- as.data.frame(tmp@reductions$umap_tmp@cell.embeddings)
+    df_umap$cluster   <- tmp$seurat_clusters   # cluster calcolati a questa res
+    df_umap$cluster_0 <- seurat_obj$seurat_clusters  # cluster originali (ref)
+    
+    umap_plots[[as.character(nd)]] <- ggplot(df_umap,
+                                             aes(x = umaptmp_1, y = umaptmp_2,
+                                                 color = cluster)) +
+      geom_point(size = 0.05, alpha = 0.3) +
+      guides(color = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+      labs(title    = sprintf("UMAP  —  dims = 1:%d  |  res = %.1f", nd, res),
+           subtitle = sprintf("Cumulative variance = %.1f%%", cum_var[nd]),
+           x = "UMAP 1", y = "UMAP 2") +
+      theme_classic(base_size = 11) +
+      theme(legend.text  = element_text(size = 7),
+            legend.title = element_blank())
+    
+    rm(tmp); gc()
+  }
   
-  rm(tmp); gc()
+  p_umap_sensitivity <- wrap_plots(umap_plots, ncol = 3) +
+    plot_annotation(
+      title    = sprintf("UMAP Sensitivity Analysis  —  Resolution = %.1f", res),
+      subtitle = sprintf(
+        "Clusters calcolati a res=%.1f su UMAP con 1:%d, 1:%d, 1:%d PC rispettivamente",
+        res, pc_dims[1], pc_dims[2], pc_dims[3]
+      ),
+      theme = theme(plot.title    = element_text(size = 14, face = "bold"),
+                    plot.subtitle = element_text(size = 11))
+    )
+  
+  # Filename con resolution codificata: es. 05_umap_sensitivity_res0.4.png
+  fname <- sprintf("05_umap_sensitivity_res%.1f.png", res)
+  save_plot(p_umap_sensitivity, fname, w = 18, h = 6)
 }
-
-p_umap_sensitivity <- wrap_plots(umap_plots, ncol = 3) +
-  plot_annotation(
-    title    = "UMAP Sensitivity Analysis",
-    subtitle = "Same clusters (from dims=1:6) proiettati su UMAP ricalcolate con diversi numeri di PC",
-    theme    = theme(plot.title    = element_text(size = 14, face = "bold"),
-                     plot.subtitle = element_text(size = 11))
-  )
-
-save_plot(p_umap_sensitivity, "05_umap_sensitivity.png", w = 18, h = 6)
 
 
 # ============================================================
 #  6. ARI/NMI CLUSTER STABILITY — label-permutation-invariant
 #     Computes ARI and NMI between clustering at PC6 (reference)
-#     and clusterings at PC10, PC15, PC20.
+#     and clusterings at PC10, PC20.  [MODIFICATO: rimosso PC15]
+#     Per ciascuna resolution in c(0.4, 0.5, 0.7). [AGGIUNTO]
 #     ARI = 1 → identical structure; ARI ~ 0 → random agreement
 #     Unlike raw concordance, ARI is invariant to cluster renumbering.
 # ============================================================
-message("[6/6] ARI/NMI cluster stability across PC cutoffs...")
+message("[6/6] ARI/NMI cluster stability across PC cutoffs e resolution...")
 
 # bluster::pairwiseRand requires Bioconductor; use fossil::adj.rand.index
 # as lightweight alternative, falling back to manual computation if needed.
@@ -279,50 +309,67 @@ nmi_manual <- function(a, b) {
   mi / denom
 }
 
-ref_labels <- as.character(seurat_obj$seurat_clusters)
-pc_targets  <- c(10, 15, 20)
-stability_results <- list()
+# PC targets: [MODIFICATO da c(10, 15, 20) a c(10, 20)]
+pc_targets <- c(10, 20)
 
-for (nd in pc_targets) {
-  message(sprintf("  Computing ARI/NMI for dims = 1:%d vs 1:%d ...", N_PCS_USED, nd))
-  tmp <- FindNeighbors(seurat_obj, dims = 1:nd, verbose = FALSE)
-  tmp <- FindClusters(tmp, resolution = 0.7, verbose = FALSE,
-                      cluster.name = "clusters_tmp",
-                      graph.name   = "RNA_snn")
-  cmp_labels <- as.character(tmp$clusters_tmp)
+# Riferimento: clustering originale dell'oggetto
+ref_labels <- as.character(seurat_obj$seurat_clusters)
+
+# Raccoglie risultati per tutte le combinazioni PC × resolution
+all_stability <- list()
+
+for (res in RES_VALUES) {
+  message(sprintf("  Resolution = %.1f", res))
   
-  ari_val <- ari_manual(ref_labels, cmp_labels)
-  nmi_val <- nmi_manual(ref_labels, cmp_labels)
-  
-  # contingency matrix (row-normalised) for heatmap tile
-  cont <- data.frame(ref = ref_labels, cmp = cmp_labels) |>
-    count(ref, cmp) |>
-    group_by(ref) |>
-    mutate(pct = n / sum(n) * 100) |>
-    ungroup() |>
-    mutate(pc_comparison = sprintf("PC%d vs PC%d", N_PCS_USED, nd),
-           ari = ari_val, nmi = nmi_val)
-  
-  stability_results[[as.character(nd)]] <- cont
-  rm(tmp); gc()
+  for (nd in pc_targets) {
+    message(sprintf("    Computing ARI/NMI for dims = 1:%d vs 1:%d, res = %.1f ...",
+                    N_PCS_USED, nd, res))
+    tmp <- FindNeighbors(seurat_obj, dims = 1:nd, verbose = FALSE)
+    tmp <- FindClusters(tmp, resolution = res, verbose = FALSE,
+                        cluster.name = "clusters_tmp",
+                        graph.name   = "RNA_snn")
+    cmp_labels <- as.character(tmp$clusters_tmp)
+    
+    ari_val <- ari_manual(ref_labels, cmp_labels)
+    nmi_val <- nmi_manual(ref_labels, cmp_labels)
+    
+    # contingency matrix (row-normalised) per heatmap tile
+    cont <- data.frame(ref = ref_labels, cmp = cmp_labels) |>
+      count(ref, cmp) |>
+      group_by(ref) |>
+      mutate(pct = n / sum(n) * 100) |>
+      ungroup() |>
+      mutate(
+        pc_comparison = sprintf("PC%d vs PC%d", N_PCS_USED, nd),
+        resolution    = res,
+        ari           = ari_val,
+        nmi           = nmi_val
+      )
+    
+    key <- sprintf("nd%d_res%.1f", nd, res)
+    all_stability[[key]] <- cont
+    rm(tmp); gc()
+  }
 }
 
-df_stability <- bind_rows(stability_results)
+df_stability <- bind_rows(all_stability)
 
-# ── 6a: ARI / NMI summary bar plot ──────────────────────────
+# ── 6a: ARI / NMI summary bar plot (facettato per resolution) ──
 df_metrics <- df_stability |>
-  distinct(pc_comparison, ari, nmi) |>
+  distinct(pc_comparison, resolution, ari, nmi) |>
   tidyr::pivot_longer(cols = c(ari, nmi),
                       names_to  = "metric",
                       values_to = "value") |>
-  mutate(metric = toupper(metric),
-         label  = sprintf("%.3f", value))
+  mutate(metric     = toupper(metric),
+         label      = sprintf("%.3f", value),
+         resolution = factor(sprintf("res = %.1f", resolution),
+                             levels = sprintf("res = %.1f", RES_VALUES)))
 
 p_ari <- ggplot(df_metrics, aes(x = pc_comparison, y = value, fill = metric)) +
   geom_col(position = position_dodge(0.7), width = 0.6) +
   geom_text(aes(label = label),
             position = position_dodge(0.7),
-            vjust = -0.4, size = 3.5) +
+            vjust = -0.4, size = 3.2) +
   geom_hline(yintercept = c(0.6, 0.8),
              linetype = c("dashed", "dotted"),
              color    = c("#e07b00", "#2171b5"),
@@ -337,58 +384,77 @@ p_ari <- ggplot(df_metrics, aes(x = pc_comparison, y = value, fill = metric)) +
                     name = NULL) +
   scale_y_continuous(limits = c(0, 1.05),
                      expand = expansion(mult = c(0, 0.05))) +
+  facet_wrap(~ resolution, ncol = 3) +   # [AGGIUNTO: una colonna per res]
   labs(
     title    = "Cluster stability: ARI and NMI (label-permutation invariant)",
-    subtitle = sprintf("Reference: clustering at dims = 1:%d  |  Resolution = 0.7", N_PCS_USED),
+    subtitle = sprintf("Reference: clustering at dims = 1:%d  |  Resolutions = %s",
+                       N_PCS_USED, paste(RES_VALUES, collapse = " / ")),
     x = NULL, y = "Score (0 = random, 1 = identical)"
   ) +
   theme_classic(base_size = 13) +
-  theme(legend.position = "top")
+  theme(legend.position = "top",
+        strip.background = element_rect(fill = "grey92", color = NA),
+        strip.text       = element_text(face = "bold"))
 
-save_plot(p_ari, "06a_ARI_NMI_summary.png", w = 9, h = 6)
+save_plot(p_ari, "06a_ARI_NMI_summary.png", w = 14, h = 6)  # [MODIFICATO: w allargato]
 
-# ── 6b: contingency heatmaps per ogni confronto ─────────────
-heatmap_list <- lapply(pc_targets, function(nd) {
-  sub <- df_stability |>
-    filter(pc_comparison == sprintf("PC%d vs PC%d", N_PCS_USED, nd))
-  ari_val <- unique(sub$ari)
-  nmi_val <- unique(sub$nmi)
+# ── 6b: contingency heatmaps — una griglia per resolution ───
+# Per ogni resolution: heatmap per ogni PC target (PC10, PC20)
+# [MODIFICATO: rimosso PC15, aggiunto loop su resolution]
+
+for (res in RES_VALUES) {
   
-  ggplot(sub, aes(x = cmp, y = ref, fill = pct)) +
-    geom_tile(color = "white", linewidth = 0.3) +
-    geom_text(aes(label = ifelse(pct > 3, sprintf("%.0f%%", pct), "")),
-              size = 2.5, color = "white") +
-    scale_fill_gradient(low = "white", high = "#08306b",
-                        name = "% cells\n(row)", limits = c(0, 100)) +
-    labs(
-      title    = sprintf("PC%d vs PC%d", N_PCS_USED, nd),
-      subtitle = sprintf("ARI = %.3f  |  NMI = %.3f", ari_val, nmi_val),
-      x = sprintf("Clusters (dims = 1:%d)", nd),
-      y = sprintf("Clusters (dims = 1:%d)", N_PCS_USED)
-    ) +
-    theme_classic(base_size = 10) +
-    theme(axis.text      = element_text(size = 7),
-          legend.position = "right")
-})
-
-p_heatmaps <- wrap_plots(heatmap_list, ncol = 3) +
-  plot_annotation(
-    title = "Contingency heatmaps: reference clustering (6 PC) vs increasing PC cutoffs",
-    theme = theme(plot.title = element_text(size = 13, face = "bold"))
-  )
-
-save_plot(p_heatmaps, "06b_contingency_heatmaps.png", w = 20, h = 8)
+  heatmap_list <- lapply(pc_targets, function(nd) {
+    sub <- df_stability |>
+      filter(pc_comparison == sprintf("PC%d vs PC%d", N_PCS_USED, nd),
+             abs(resolution - res) < 1e-9)
+    ari_val <- unique(sub$ari)
+    nmi_val <- unique(sub$nmi)
+    
+    ggplot(sub, aes(x = cmp, y = ref, fill = pct)) +
+      geom_tile(color = "white", linewidth = 0.3) +
+      geom_text(aes(label = ifelse(pct > 3, sprintf("%.0f%%", pct), "")),
+                size = 2.5, color = "white") +
+      scale_fill_gradient(low = "white", high = "#08306b",
+                          name = "% cells\n(row)", limits = c(0, 100)) +
+      labs(
+        title    = sprintf("PC%d vs PC%d", N_PCS_USED, nd),
+        subtitle = sprintf("ARI = %.3f  |  NMI = %.3f", ari_val, nmi_val),
+        x = sprintf("Clusters (dims = 1:%d, res = %.1f)", nd, res),
+        y = sprintf("Clusters (dims = 1:%d, ref)", N_PCS_USED)
+      ) +
+      theme_classic(base_size = 10) +
+      theme(axis.text       = element_text(size = 7),
+            legend.position = "right")
+  })
+  
+  p_heatmaps <- wrap_plots(heatmap_list, ncol = 2) +  # [MODIFICATO: ncol=2 per 2 PC target]
+    plot_annotation(
+      title = sprintf(
+        "Contingency heatmaps: reference clustering (PC%d) vs PC cutoffs  |  res = %.1f",
+        N_PCS_USED, res
+      ),
+      theme = theme(plot.title = element_text(size = 13, face = "bold"))
+    )
+  
+  fname <- sprintf("06b_contingency_heatmaps_res%.1f.png", res)
+  save_plot(p_heatmaps, fname, w = 16, h = 8)
+}
 
 
 # ============================================================
 #  SUMMARY REPORT
+#  [MODIFICATO]: rimosso PC15, aggiunto loop su resolution
 # ============================================================
-ari_10 <- df_stability |> filter(pc_comparison == "PC6 vs PC10") |>
-  pull(ari) |> unique()
-ari_15 <- df_stability |> filter(pc_comparison == "PC6 vs PC15") |>
-  pull(ari) |> unique()
-ari_20 <- df_stability |> filter(pc_comparison == "PC6 vs PC20") |>
-  pull(ari) |> unique()
+
+# Estrai ARI per ogni combinazione PC × resolution
+get_ari <- function(pc_nd, res) {
+  df_stability |>
+    filter(pc_comparison == sprintf("PC%d vs PC%d", N_PCS_USED, pc_nd),
+           abs(resolution - res) < 1e-9) |>
+    pull(ari) |>
+    unique()
+}
 
 cat("\n")
 cat("══════════════════════════════════════════════\n")
@@ -401,14 +467,17 @@ cat(sprintf("  PCs computed     : %d\n", N_PCS_TOTAL))
 cat("----------------------------------------------\n")
 cat(sprintf("  Variance @ PC6  : %.2f%%\n", cum_var[6]))
 cat(sprintf("  Variance @ PC10 : %.2f%%\n", cum_var[10]))
-cat(sprintf("  Variance @ PC15 : %.2f%%\n", cum_var[15]))
 cat(sprintf("  Variance @ PC20 : %.2f%%\n", cum_var[20]))
 cat(sprintf("  Variance @ PC50 : %.2f%%\n", cum_var[50]))
 cat("----------------------------------------------\n")
 cat("  Cluster stability (ARI, label-invariant):\n")
-cat(sprintf("    PC6 vs PC10 : ARI = %.3f\n", ari_10))
-cat(sprintf("    PC6 vs PC15 : ARI = %.3f\n", ari_15))
-cat(sprintf("    PC6 vs PC20 : ARI = %.3f\n", ari_20))
+for (res in RES_VALUES) {
+  cat(sprintf("  Resolution = %.1f:\n", res))
+  for (nd in pc_targets) {
+    ari_val <- get_ari(nd, res)
+    cat(sprintf("    PC%d vs PC%d : ARI = %.3f\n", N_PCS_USED, nd, ari_val))
+  }
+}
 cat("  Interpretation: ARI > 0.8 = strong stability\n")
 cat("                  ARI 0.6-0.8 = moderate\n")
 cat("                  ARI < 0.6 = substantial restructuring\n")

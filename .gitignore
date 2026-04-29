@@ -13,5 +13,15 @@
 trash
 job_*
 */*/
+!res_validation/nature_paper_validation/
+!res_validation/nature_paper_validation/final_code/
+!res_validation/nature_paper_validation/final_code/*.R
 .Rapp.history
 old*
+*.h5
+*.h5ad
+*.html
+jennifer_data_control/
+scRNA_data_new/
+find_genes_in_Jennifer_data_and_calculate_stats.R
+.DS_Store

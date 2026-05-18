@@ -10,13 +10,19 @@
 *.tsv
 *.log
 *.txt
+*.pptx
+*.RData
 trash
 job_*
+.DS_Store
+.Rapp.history
+.claude/
 */*/
 !res_validation/nature_paper_validation/
 !res_validation/nature_paper_validation/final_code/
 !res_validation/nature_paper_validation/final_code/*.R
-.Rapp.history
+!proteomics_analysis/1_WGCNA/
+!proteomics_analysis/2_temporal_analysis/
 old*
 *.h5
 *.h5ad
@@ -24,4 +30,3 @@ old*
 jennifer_data_control/
 scRNA_data_new/
 find_genes_in_Jennifer_data_and_calculate_stats.R
-.DS_Store
